@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type Note, parseChecked, parseKept, parseProposals } from "./notes.js";
+import { citedNotes, type Note, parseChecked, parseKept, parseProposals } from "./notes.js";
 
 // vitest.config.ts sets OWNER_NAME=Alex
 const shown = { sources: new Set(["chat:ctx-16261", "chat:turn:abc"]), notes: new Set([12, 40]) };
@@ -73,4 +73,9 @@ it("retires each changed note into the shown note at the end of its chain, dropp
   ] });
   expect(parseChecked(reply, new Set([334, 392, 12, 40, 309, 50, 51]))).toEqual(new Map([[334, 392], [309, 392], [50, 51]]));
   expect(() => parseChecked('{"notes":[]}', new Set([334]))).toThrow();
+});
+
+it("finds the notes material retires by id, not other numbers after a #", () => {
+  expect(citedNotes("Alex retired the Oct 17 preference (note #1241); see also notes 404, memory:774 and Note#12.")).toEqual(new Set([1241, 404, 774, 12]));
+  expect(citedNotes("PR #1241 landed; issue #404 is open; the 2026 roster")).toEqual(new Set());
 });

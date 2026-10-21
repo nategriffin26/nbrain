@@ -11,6 +11,7 @@ import { pollMessages } from "./connectors/messages.js";
 import { pollOmp } from "./connectors/omp.js";
 import { pollX } from "./connectors/x.js";
 import { enrichCaptures } from "./capture/enrich.js";
+import { evalWeekly } from "./eval/recall.js";
 import { gardenNightly } from "./garden.js";
 import { indexEvents } from "./memory/events.js";
 import { consolidate, refreshProfile } from "./memory/notes.js";
@@ -47,6 +48,8 @@ LOOPS.push(
   // notes from what was said since the last run (a conversation settles over minutes), then the profile if they changed
   { name: "memory_notes", every: 5 * MINUTE, run: async () => { if (await consolidate(pool)) await refreshProfile(pool); } },
   { name: "garden", every: MINUTE, run: async () => { if (gardenDue()) await gardenNightly(pool); } },
+  // the retrieval eval, early Sunday (or the first morning after a missed week); the score lands in the journal
+  { name: "eval", every: 10 * MINUTE, run: () => evalWeekly(pool) },
   // skills and styles saved in the context repo (or edited by hand), searchable within a minute
   { name: "memory_skills", every: MINUTE, run: () => indexSkills(pool) },
 );

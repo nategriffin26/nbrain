@@ -58,6 +58,8 @@ Read the new material and answer with JSON only: {"notes":[{"kind","subject","te
 - sources: the [ids] of the material it comes from.
 - Latest wins. When the material changes, corrects, narrows or reverses current notes, write the new note whole and put the #id of every current note it makes wrong or out of date in "replaces"; they are retired. Look through all the current notes on that subject for it, old and short ones too: a note left standing beside its reversal tells ${ASSISTANT} both. A note is retired only for what the new note says again or makes wrong: whatever else it says is kept as its own note, so leave other things out of the new note. When it only repeats a current note, write nothing. Merge current notes that say the same thing by writing one note that replaces them all.
 - Imported notes are older notes about ${O} from a previous assistant: carry over the ones still worth knowing in these kinds, rewritten to the rules above.
+- A note a bot was asked to keep is ${O}'s word relayed: write it as a note (its words, only relative dates made absolute) unless a current note already says exactly this, and retire every current note it corrects, narrows or reverses, standing rules and lists included (a new roster replaces the old one; "the only rule is X" replaces the rules it drops).
+- Texts and mail: keep only what establishes something durable about ${O} or ${OWNER.their} people (a plan, an appointment, a commitment, a change in someone's life, what ${O} wrote or agreed to). Receipts, bills, alerts, shipping notices and newsletters are no note: records and search cover them.
 Answer {"notes":[]} when nothing is worth keeping.`;
 
 const RECONCILE = `You keep ${ASSISTANT}'s notes about ${O} current: the short, durable things ${OWNER.their} assistant knows without searching (facts, preferences, standing rules, decisions, situations). Latest wins: a note left standing beside its reversal tells ${ASSISTANT} both.
@@ -94,6 +96,7 @@ export const renderNote = (note: Note) => `#${note.id} · ${note.kind} · ${note
 
 function label(item: Material): string {
   if (item.source === "memory") return "imported note";
+  if (item.source === "note") return `note ${item.who || "a bot"} was asked to keep`;
   if (item.source === "omp") return `work session (${item.project ?? item.thread_title ?? "unknown project"})`;
   if (item.source === "chat") return item.origin === "event" ? `chat turn with ${item.thread_title ?? item.who}` : `${item.from_me ? O : item.who || ASSISTANT} in chat${item.thread_title ? ` with ${item.thread_title}` : ""}`;
   return `${item.source}${item.from_me ? ` from ${O}` : item.who ? ` from ${item.who}` : ""}`;
@@ -160,20 +163,27 @@ async function propose(system: string, notes: Note[], material: string, sources:
   return parseProposals(await ask(system, notes, material, now), { sources, notes: new Set(notes.map(note => note.id)) }, fallbackAt);
 }
 
-/** One read of new material against the current notes: the notes it writes, and what the notes they retire keep. */
+/** Notes the material names by id ("note #1241", "memory:1241"): a bot told to retire one means all of it. */
+export function citedNotes(material: string): Set<number> {
+  return new Set([...material.matchAll(/\b(?:notes?\s*#?|memory:)(\d+)\b/gi)].map(match => Number(match[1])));
+}
+
+/** One read of new material against the current notes: the notes it writes, and what the notes they retire keep. A
+ *  retired note the material names by id is retired whole: nothing of it is kept. */
 export async function readWindow(notes: Note[], material: string, sources: ReadonlySet<string>, fallbackAt: Date, now: Date): Promise<{ proposals: Proposal[]; kept: Kept[] }> {
   const proposals = await propose(INSTRUCTIONS, notes, material, sources, fallbackAt, now);
-  return { proposals, kept: await keep(notes, proposals, now) };
+  return { proposals, kept: await keep(notes, proposals, now, new Map(), citedNotes(material)) };
 }
 
 /** What each retired note (replaced by one of `proposals`, or a key of `retire`, which names the shown note it gives way
  * to) says that no new note and no staying note says again or makes wrong: the model splits each retired note into
- * statements and names the note holding each, and the statements no note holds stay. */
-export async function keep(shown: readonly Note[], proposals: readonly Proposal[], now: Date, retire: ReadonlyMap<number, number> = new Map()): Promise<Kept[]> {
-  const retired = new Map(shown.filter(note => retire.has(note.id) || proposals.some(proposal => proposal.replaces.includes(note.id))).map(note => [note.id, note]));
+ * statements and names the note holding each, and the statements no note holds stay. `whole`: retired notes that keep nothing. */
+export async function keep(shown: readonly Note[], proposals: readonly Proposal[], now: Date, retire: ReadonlyMap<number, number> = new Map(), whole: ReadonlySet<number> = new Set()): Promise<Kept[]> {
+  const gone = shown.filter(note => retire.has(note.id) || proposals.some(proposal => proposal.replaces.includes(note.id)));
+  const retired = new Map(gone.filter(note => !whole.has(note.id)).map(note => [note.id, note]));
   if (retired.size === 0) return [];
   const proposed = proposals.map((proposal, index) => `new ${index + 1} · retires ${proposal.replaces.map(id => `#${id}`).join(", ") || "none"} · ${proposal.kind} · ${proposal.subject} · ${day(proposal.at)}${proposal.until ? ` (until ${day(proposal.until)})` : ""}: ${proposal.text}`);
-  const staying = shown.filter(note => !retired.has(note.id));
+  const staying = shown.filter(note => !gone.includes(note));
   const reply = await complete({
     role: "notes", session: "memory-notes", maxTokens: 8192,
     messages: [
@@ -268,14 +278,24 @@ export async function syncNoteItems(pool: Pool): Promise<void> {
   for (let start = 0; start < items.length; start += 64) await writeItems(pool, items.slice(start, start + 64));
 }
 
-/** Material not yet read (or rewritten since), oldest first. */
+/** Gmail's bulk tabs: mail there never says what the owner decided or who their people are. */
+const BULK_MAIL = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"];
+
+/** Material not yet read (or rewritten since), oldest first: chats with the bots, the owner's work sessions (from 14 days
+ *  before the first was read), imported notes, notes a bot asked to keep (`remember`), and texts and mail as they arrive,
+ *  bulk mail left out (a message an earlier gate dropped stays dropped). */
 async function pending(pool: Pool): Promise<Material[]> {
   const { rows } = await pool.query<Material>(
     `SELECT i.id, i.source, i.origin, i.at, i.title, i.body, coalesce(i.sender_name, i.sender, '') AS who, i.from_me, i.thread, i.thread_title, i.meta->>'project' AS project, i.hash
      FROM memory.items i LEFT JOIN memory.consolidated c ON c.item_id = i.id
      WHERE (c.item_id IS NULL OR c.hash <> i.hash)
-       AND (i.source = 'chat' OR (i.source = 'omp' AND i.at >= (SELECT min(received_at) FROM brain.events WHERE source = 'omp') - interval '14 days') OR (i.source = 'memory' AND i.origin = 'context') OR i.event_id IN (SELECT id FROM brain.events WHERE route = 'brief'))
-     ORDER BY i.at, i.id LIMIT 2000`);
+       AND (i.source = 'chat'
+         OR (i.source = 'omp' AND i.at >= (SELECT min(received_at) FROM brain.events WHERE source = 'omp') - interval '14 days')
+         OR (i.source = 'memory' AND i.origin = 'context')
+         OR (i.source = 'note' AND i.origin = 'note' AND i.kind = ANY($1))
+         OR EXISTS (SELECT 1 FROM brain.events e WHERE e.id = i.event_id AND e.route IS DISTINCT FROM 'drop'
+           AND (e.kind IN ('text.received', 'text.sent', 'mail.sent') OR (e.kind = 'mail.received' AND NOT coalesce(e.data->'labels', '[]') ?| $2))))
+     ORDER BY i.at, i.id LIMIT 2000`, [NOTE_KINDS, BULK_MAIL]);
   return rows.map(row => ({ ...row, at: new Date(row.at) }));
 }
 

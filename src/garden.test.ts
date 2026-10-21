@@ -45,14 +45,19 @@ it("drops a whole edit set that takes the file past its budget, but lets an over
   expect(applyEdits(file, [edit({ op: "delete", find: "- Plain words." })], { budget: 10 }).applied).toHaveLength(1);
 });
 
-it("in a proposed-only file takes only lines marked proposed and deletes nothing", () => {
-  const result = applyEdits(file, [
-    edit({ op: "add", section: "Building", text: "- Ship a side business." }),
-    edit({ op: "add", section: "Building", text: "- Ship a side business (proposed)." }),
+it("in a proposed-only file never touches the owner's lines, only adds or revises lines marked proposed", () => {
+  const goals = `${file}- Ship a side business (proposed).\n`;
+  const result = applyEdits(goals, [
+    edit({ op: "add", section: "Building", text: "- Learn to weld." }),
+    edit({ op: "add", section: "Building", text: "- Learn to weld (proposed)." }),
     edit({ op: "delete", find: "- Plain words." }),
+    // the night it went wrong: the owner's line rewritten, the new text marked proposed
+    edit({ op: "replace", find: "- Fix at the root.", text: "- Fix at the root, fast (proposed)." }),
+    edit({ op: "replace", find: "- Ship a side business (proposed).", text: "- Ship a small online business (proposed)." }),
   ], { budget: 5000, proposedOnly: true });
-  expect(result.applied.map(each => each.text)).toEqual(["- Ship a side business (proposed)."]);
-  expect(result.skipped).toHaveLength(2);
+  expect(result.applied.map(each => each.text)).toEqual(["- Learn to weld (proposed).", "- Ship a small online business (proposed)."]);
+  expect(result.text).toContain("- Plain words.\n");
+  expect(result.text).toContain("- Fix at the root.\n");
 });
 
 it("keeps only edits that cite evidence it was shown", () => {

@@ -63,12 +63,13 @@ Any agent with write scope can call `save`; from a shell, `nbrain save <url> --w
 | `memory_records` | 1 min | Records out of new mail, texts and calendar events |
 | `capture_enrich` | 1 min | Summary, tags and chunk context for saved items |
 | `memory_skills` | 1 min | Skills and styles into search |
-| `memory_notes` | 5 min | Notes from new conversation turns, then the life profile if they changed |
+| `memory_notes` | 5 min | Notes from new conversation turns, texts, mail and `remember` notes, then the life profile if they changed |
 | `garden` | 03:30 | Yesterday's journal and small edits to the profile files |
+| `eval` | weekly | The retrieval eval, early Sunday, when a question file exists |
 
-- **Notes.** A notes model reads new conversation turns and writes facts, preferences, rules, decisions and situations. Latest wins: a note that changes another replaces it, and only current notes are searchable. `remember` notes sit beside them, append-only.
-- **Gardener.** Once a night it writes `journal/YYYY-MM-DD.md` and proposes a few line edits to each profile file, each citing its evidence. The default is no change, and every changed file is its own commit by `gardener`, so `git log -p` in the context repo is the audit trail and `git revert` undoes an edit. Preview a day with `nbrain garden --day YYYY-MM-DD --dry-run`.
-- **Eval.** `nbrain eval questions.json` runs each question through the same search `memory_search` uses (all sources, reranked, 10 hits). A question passes only if every expected fact appears in the hits, so there is no LLM judge. Each miss names the stage that lost it. Results land in `$BRAIN_HOME/eval/recall-<time>.json`.
+- **Notes.** A notes model reads chats with your bots, coding-session turns, texts, mail (not Gmail's promotions, social or forums tabs) and the notes agents `remember`, and writes facts, preferences, rules, decisions and situations. Latest wins: a note that changes another replaces it, and only current notes are searchable. A `remember` note is kept verbatim at once and, within minutes, retires the notes it corrects; one that names a note by id ("note #123") retires all of it.
+- **Gardener.** Once a night it writes `journal/YYYY-MM-DD.md` and proposes a few line edits to each profile file, each citing its evidence. The default is no change, and every changed file is its own commit by `gardener`, so `git log -p` in the context repo is the audit trail and `git revert` undoes an edit. `goals.md` is yours: the gardener only adds lines marked "(proposed)" and never changes or removes one of yours. A journal bullet that restates one already there is dropped. Preview a day with `nbrain garden --day YYYY-MM-DD --dry-run`.
+- **Eval.** `nbrain eval questions.json` runs each question through the same search `memory_search` uses (all sources, reranked, 10 hits). A question passes only if every expected fact appears in the hits, so there is no LLM judge. Each miss names the stage that lost it; a miss whose fact is no longer anywhere in memory (the note was rewritten as the truth changed) is `stale`, a question to update rather than a search failure. Results land in `$BRAIN_HOME/eval/recall-<time>.json`, and the score goes on the `eval` cursor and, with the stale questions, into that day's journal. With `$BRAIN_HOME/eval/memory-v2.json` (or `EVAL_QUESTIONS`) in place, ingest runs it every Sunday after 04:00.
 
   ```json
   { "questions": [{ "id": "saved-1", "category": "saved", "query": "how much did context per chunk cut retrieval failures", "facts": ["49%"] }] }
