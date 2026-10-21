@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.brain.ingest</string>
+  <key>ProgramArguments</key><array><string>__REPO__/bin/run-ingest.sh</string></array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>20</integer>
+  <key>StandardOutPath</key><string>__LOGS__/brain-ingest.log</string>
+  <key>StandardErrorPath</key><string>__LOGS__/brain-ingest.log</string>
+</dict></plist>

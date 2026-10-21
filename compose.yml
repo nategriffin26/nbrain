@@ -1,0 +1,29 @@
+# Postgres 17 with pgvector and ParadeDB pg_search (BM25), on 127.0.0.1:5433 (PG_PORT). `docker compose up -d`.
+name: nbrain
+services:
+  postgres:
+    build:
+      dockerfile_inline: |
+        FROM pgvector/pgvector:pg17
+        ARG TARGETARCH
+        ADD https://github.com/paradedb/paradedb/releases/download/v0.26.2/postgresql-17-pg-search_0.26.2-1PARADEDB-bookworm_$${TARGETARCH}.deb /tmp/pg_search.deb
+        RUN apt-get update && apt-get install -y /tmp/pg_search.deb && rm -rf /tmp/pg_search.deb /var/lib/apt/lists/*
+    image: nbrain/postgres:pg17-search
+    restart: unless-stopped
+    # shared_buffers holds the HNSW index; below its size every backend evicts dirty index pages
+    command: postgres -c shared_preload_libraries=pg_search -c shared_buffers=512MB
+    environment:
+      POSTGRES_USER: nbrain
+      POSTGRES_PASSWORD: nbrain
+      POSTGRES_DB: nbrain
+    ports:
+      - "127.0.0.1:${PG_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nbrain -d nbrain"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+volumes:
+  pgdata:

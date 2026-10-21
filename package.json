@@ -1,0 +1,35 @@
+{
+  "name": "nbrain",
+  "version": "0.1.0",
+  "description": "A personal second brain every agent shares: your mail, texts, sessions and saved pages, a curated profile, and skills and styles distilled from finished work, behind one MCP server.",
+  "license": "MIT",
+  "private": true,
+  "bin": { "nbrain": "bin/nbrain" },
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "ingest": "tsx src/ingest.ts",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "defuddle": "^0.19.5",
+    "hono": "^4.13.13",
+    "linkedom": "^0.18.13",
+    "pg": "8.23.1",
+    "tsx": "4.23.15",
+    "unpdf": "^1.9.1",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/pg": "8.23.1",
+    "typescript": "^5.9",
+    "vitest": "4.1.12"
+  }
+}
