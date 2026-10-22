@@ -62,21 +62,21 @@ function bound(value: string, end: boolean): Date {
   return end && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1) : date;
 }
 
-interface Person { id: string; name: string; aliases: string[]; handles: string[]; kind: string; relationship: string | null }
+/** `former`: ids of person rows merged into this one (meta.formerIds), so a lookup by an old id still lands here. */
+interface Person { id: string; name: string; aliases: string[]; handles: string[]; kind: string; relationship: string | null; former: string[] }
 let peopleCache: { at: number; people: Person[] } | undefined;
 async function allPeople(pool: Pool): Promise<Person[]> {
   if (peopleCache && Date.now() - peopleCache.at < 60_000) return peopleCache.people;
-  const { rows } = await pool.query<Person>("SELECT id, name, aliases, handles, kind, relationship FROM memory.people WHERE kind <> 'self'");
+  const { rows } = await pool.query<Person>("SELECT id, name, aliases, handles, kind, relationship, coalesce(meta->'formerIds', '[]') AS former FROM memory.people WHERE kind <> 'self'");
   peopleCache = { at: Date.now(), people: rows };
   return rows;
 }
 
-/** Who `name` is: exact (folded) names, aliases or handles; else people whose names hold every word of it. */
 export async function resolvePerson(pool: Pool, name: string): Promise<Person[]> {
   const wanted = fold(name.trim()).replace(/^my\s+/, "");
   const handle = foldHandle(name);
   const people = await allPeople(pool);
-  const exact = people.filter(each => each.id === name.trim() || fold(each.name) === wanted || each.aliases.some(alias => fold(alias) === wanted) || each.handles.includes(handle));
+  const exact = people.filter(each => each.id === name.trim() || each.former.includes(name.trim()) || fold(each.name) === wanted || each.aliases.some(alias => fold(alias) === wanted) || each.handles.includes(handle));
   if (exact.length > 0) return exact;
   const words = wanted.split(/\s+/).filter(word => word.length > 1);
   return people.filter(each => words.length > 0 && words.every(word => [each.name, ...each.aliases].some(known => fold(known).split(/\s+/).includes(word)))).slice(0, 10);
