@@ -103,7 +103,8 @@ export async function evaluate(pool: Pool, file = QUESTIONS) {
   const results = await runRecall(pool, questions);
   const summary = summarize(results);
   const out = `${BRAIN_HOME}/eval/recall-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`;
-  await writeFile(out, JSON.stringify({ summary: { ...summary, questions: file }, results }, null, 1));
+  // the summary is what Helm shows for each run; the question file is provenance, not a result
+  await writeFile(out, JSON.stringify({ summary, questions: file, results }, null, 1));
   const last = await readCursor(pool, CURSOR).then(text => (text ? JSON.parse(text) as Score : undefined));
   await cursorOk(pool, CURSOR, JSON.stringify({ at: new Date().toISOString(), ok: summary.ok, n: summary.n } satisfies Score));
   const sets = Object.entries(summary.bySet).map(([name, score]) => `${name} ${score}`).join(", ");
