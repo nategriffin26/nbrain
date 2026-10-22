@@ -1,5 +1,7 @@
 # nbrain: agent notes
 
+- This repo is public: no personal names, data, paths or secrets in code, tests, docs or commit messages. Anything
+  personal goes in `$BRAIN_HOME`; a change only one owner wants becomes a setting there, not code here.
 - Read README.md and docs/ first. A running brain's own notes (services, doors, secrets' names) are in
   `$BRAIN_HOME/OPERATIONS.md` (default `~/.brain`); read them before touching a live install.
 - Tool names, inputs and scopes (`src/mcp/contract.ts` and the tool table in `src/mcp/server.ts`) are a public
