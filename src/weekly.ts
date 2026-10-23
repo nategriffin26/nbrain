@@ -30,10 +30,11 @@ async function profileChanges(since: Date): Promise<string[]> {
   });
 }
 
-/** The recall eval's latest score beside the one a week before it, from $BRAIN_HOME/eval/recall-<time>.json. */
-async function recall(): Promise<string | undefined> {
+/** The recall eval's latest score beside the one a week before it, and how many questions with no answer got nothing
+ *  strong, from $BRAIN_HOME/eval/recall-<time>.json. */
+export async function recallLine(): Promise<string | undefined> {
   const names = (await readdir(`${BRAIN_HOME}/eval`).catch(() => [] as string[])).filter(name => /^recall-\d{4}-\d{2}-\d{2}/.test(name)).sort();
-  const Run = z.object({ summary: z.object({ ok: z.number(), n: z.number() }) });
+  const Run = z.object({ summary: z.object({ ok: z.number(), n: z.number(), abstain: z.object({ ok: z.number(), n: z.number() }).optional() }) });
   const runs = await Promise.all(names.map(async name => ({
     at: Date.parse(`${name.slice(7, 17)}T12:00:00Z`),
     summary: Run.parse(JSON.parse(await readFile(`${BRAIN_HOME}/eval/${name}`, "utf8"))).summary,
@@ -41,7 +42,27 @@ async function recall(): Promise<string | undefined> {
   const latest = runs.at(-1);
   if (!latest) return undefined;
   const before = runs.filter(run => run.at <= latest.at - 6 * DAY).at(-1);
-  return `- Recall: ${latest.summary.ok} of ${latest.summary.n} found on ${shortDay(latest.at)}${before ? `, ${before.summary.ok} of ${before.summary.n} the week before` : ""}.`;
+  const abstain = latest.summary.abstain;
+  return `- Recall: ${latest.summary.ok} of ${latest.summary.n} found on ${shortDay(latest.at)}${before ? `, ${before.summary.ok} of ${before.summary.n} the week before` : ""}.${abstain ? ` ${abstain.ok} of ${abstain.n} questions with no answer got nothing strong.` : ""}`;
+}
+
+/** One tiny rerank call: without the reranker search still answers, on fused rank alone, and nothing else says so. */
+export async function rerankerLine(): Promise<string> {
+  const url = process.env.RERANK_URL;
+  if (!url) return "- No reranker set (RERANK_URL): search is running without it.";
+  try {
+    const response = await fetch(`${url}/v1/rerank`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: "checkup", documents: ["checkup"] }), signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`${response.status} ${(await response.text()).slice(0, 80)}`);
+    // search reads one score per document: an answer without them reorders nothing
+    const { results } = await response.json() as { results?: unknown[] };
+    if (!results?.length) throw new Error("no scores");
+    return "- Reranker answered.";
+  } catch (error) {
+    // fetch hides why behind "fetch failed": the cause says refused, unknown host or bad port
+    const cause = error instanceof Error ? error.cause as { code?: string; message?: string } | undefined : undefined;
+    const why = cause?.code ?? cause?.message ?? (error instanceof Error ? error.message : String(error));
+    return `- Reranker did not answer (${why}): search is running without it.`;
+  }
 }
 
 /** The week's message, as the owner reads it. */
@@ -59,7 +80,7 @@ export async function weeklyMessage(pool: Pool, now = new Date()): Promise<strin
   const { rows: [backlog] } = await pool.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM memory.items i WHERE i.source = ANY($1) AND ${NOT_PRIVATE}
        AND NOT EXISTS (SELECT 1 FROM memory.cards c WHERE c.item_id = i.id) AND NOT EXISTS (SELECT 1 FROM memory.uncarded u WHERE u.item_id = i.id)`, [CARD_SOURCES]);
-  const score = await recall();
+  const [score, reranker] = await Promise.all([recallLine(), rerankerLine()]);
   return [
     `Your brain this week, ${shortDay(now.getTime())}`,
     ["Profile changes", ...(changes.length ? [...changes, `To take one back, tell ${ASSISTANT} "undo <id>".`] : ["None this week."])].join("\n"),
@@ -67,6 +88,7 @@ export async function weeklyMessage(pool: Pool, now = new Date()): Promise<strin
     ["Checkup",
       ...(score ? [score] : []),
       stale.length ? `- Connectors behind: ${stale.join("; ")}.` : "- Every connector read in the last day.",
+      reranker,
       ...(backlog!.n ? [`- ${backlog!.n} bookmarks and saves still to card.`] : []),
     ].join("\n"),
   ].join("\n\n");

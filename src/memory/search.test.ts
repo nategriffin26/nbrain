@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { containsTerm, currentSql, foldKey, matchesDate, read as readItem, sameOrder, strengthOf, visibleSql } from "./search.js";
+import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { containsTerm, currentSql, foldKey, matchesDate, read as readItem, renderResults, sameOrder, search, strengthOf, visibleSql } from "./search.js";
 import pg from "pg";
 import { dateMention } from "./text.js";
 import { changes } from "./changes.js";
+import { freshDatabase } from "../testdb.js";
 
 const row = { item_id: "mail:a", source: "gmail", thread: "thread-a", same_as: null, org: null, ref: null };
 describe("look-alikes", () => {
@@ -108,4 +109,113 @@ it.runIf(!!process.env.TEST_DATABASE_URL)("omits replaced and correction-retract
     expect(result.threads.map(thread => thread.latest.id)).toEqual(["latest"]);
     expect(await readItem(pool, "old")).toMatchObject({ id: "old", text: "fixture body" });
   } finally { await pool.query("DROP SCHEMA memory CASCADE"); await pool.end(); }
+});
+
+describe.runIf(!!process.env.TEST_DATABASE_URL)("literal search and folded history", () => {
+  let pool: pg.Pool;
+  beforeAll(async () => {
+    ({ pool } = await freshDatabase("exact"));
+    const items = [
+      ["literal", "note", "2026-01-02T12:00:00Z", "", "The rate is 50%_off [a+b].\\done", null],
+      ["wildcard", "note", "2026-01-03T12:00:00Z", "", "The rate is 500Xoff aaabXdone", null],
+      ["title-only", "note", "2026-01-04T12:00:00Z", "50%_OFF [a+b].\\done", "Unrelated body", null],
+      ["phrase-old", "note", "2026-01-01T12:00:00Z", "", "cerulean hinge", null],
+      ["phrase-new", "note", "2026-01-02T12:00:00Z", "", "cerulean hinge", null],
+      ["phrase-split", "note", "2026-01-03T12:00:00Z", "", "cerulean metal hinge", null],
+      ["private-item", "note", "2026-01-02T14:00:00Z", "", "cerulean hinge", null],
+      ["private-thread", "gmail", "2026-01-02T15:00:00Z", "", "cerulean hinge", "hidden"],
+      ["wrong-source", "saved", "2026-01-02T16:00:00Z", "", "cerulean hinge", null],
+      ["code", "gmail", "2026-01-02T17:00:00Z", "Verification code", "cerulean hinge 123456", null],
+      ["old-record", "record", "2026-01-02T18:00:00Z", "", "cerulean hinge", null],
+      ["private-record", "record", "2026-01-02T19:00:00Z", "", "cerulean hinge", null],
+      ["mail-shipped", "gmail", "2026-01-02T12:00:00Z", "Shipped: copper lantern", "copper lantern shipment", "order"],
+      ["mail-delivered", "gmail", "2026-01-03T12:00:00Z", "Delivered: copper lantern", "copper lantern delivered", "order"],
+      ["mail-ordered", "gmail", "2026-01-01T12:00:00Z", "Ordered: copper lantern", "copper lantern ordered", "order"],
+      ["text-one", "imessage", "2026-01-02T12:00:00Z", "", "cerulean hinge ready", "chat"],
+      ["text-two", "imessage", "2026-01-02T12:10:00Z", "", "cerulean hinge collected", "chat"],
+      ["window", "note", "2026-01-05T12:00:00Z", "", `${"prefix ".repeat(150)}FIRST cerulean hinge${" filler".repeat(150)}SECOND cerulean hinge cerulean hinge`, null],
+    ];
+    for (const [id, source, at, title, body, thread] of items) {
+      await pool.query(`INSERT INTO memory.items (id,source,kind,at,title,body,thread,hash,origin) VALUES ($1,$2,'message',$3,$4,$5,$6,'fixture','event')`, [id, source, at, title, body, thread]);
+    }
+    await pool.query(`INSERT INTO memory.chunks (item_id,part,start_at,end_at,heading,people,context,text,embed_hash,embedding)
+      SELECT id,0,0,length(body),title,'','',body,'fixture',$1::halfvec FROM memory.items`, [`[${Array(1024).fill(0.01).join(",")}]`]);
+    await pool.query(`INSERT INTO memory.people(id,kind,name) VALUES ('person:casey','person','Casey Example');
+      INSERT INTO memory.item_people SELECT id,'person:casey','recipient' FROM memory.items WHERE id NOT IN ('wrong-source','phrase-old');
+      INSERT INTO memory.private(target,by) VALUES ('private-item','test'),('thread:gmail:hidden','test');
+      INSERT INTO memory.records(id,item_id,type,at,extractor,superseded_by) VALUES ('old-record','phrase-old','order','2026-01-01','test','correction:1');
+      UPDATE memory.items SET meta = '{"item":"private-item"}' WHERE id = 'private-record'`);
+  }, 30_000);
+  afterAll(async () => { await pool?.end(); });
+
+  it.each(["", " ", "\t\r\n"])("does not treat blank exact query %j as strong evidence", async query => {
+    const result = await search(pool, { query, exact: true });
+    expect(result).toMatchObject({ results: [], nothing_strong: true });
+  });
+
+  it("matches percent, underscore, backslash and regex characters only literally in body or title", async () => {
+    for (const query of ["50%_off", "[a+b].\\done", "%", "_", "\\", "[a+b]"]) {
+      const result = await search(pool, { query, exact: true, rerank: false });
+      expect(result.results.map(hit => hit.id)).toEqual(["title-only", "literal"]);
+      expect(result.results.every(hit => hit.strength === "strong")).toBe(true);
+      expect(result.nothing_strong).toBeUndefined();
+    }
+  });
+
+  it("keeps the entire exact phrase and explicit person, source and inclusive day filters", async () => {
+    const result = await search(pool, { query: "CERULEAN HINGE", exact: true, person: "Casey Example", source: ["note"], from: "2026-01-02", to: "2026-01-02", rerank: false });
+    expect(result.results.map(hit => hit.id)).toEqual(["phrase-new"]);
+    expect(result.person).toEqual([{ id: "person:casey", name: "Casey Example" }]);
+    expect((await search(pool, { query: "cerulean hinge", exact: true, person: "Casey Example", source: ["note"], rerank: false })).results.map(hit => hit.id)).toEqual(["window", "phrase-new"]);
+    const visible = await search(pool, { query: "cerulean hinge", exact: true, from: "2026-01-02", to: "2026-01-02", rerank: false });
+    expect(visible.results.map(hit => hit.id)).toEqual(["wrong-source", "text-two", "phrase-new"]);
+    expect(visible.results.find(hit => hit.id === "text-two")?.folded).toBeUndefined();
+    expect(visible.results.find(hit => hit.id === "text-two")?.quote).toContain("cerulean hinge ready");
+    const privateResult = await search(pool, { query: "cerulean hinge", exact: true, source: ["note"], from: "2026-01-02", to: "2026-01-02", private: true, rerank: false });
+    expect(privateResult.results.map(hit => hit.id)).toEqual(["private-item", "phrase-new"]);
+    expect((await search(pool, { query: "cerulean hinge", exact: true, person: "Nobody Here", rerank: false })).nothing_strong).toBe(true);
+    expect((await search(pool, { query: "cerulean hinge 123456", exact: true, rerank: false })).results.map(hit => hit.id)).toEqual(["code"]);
+  });
+
+  it("shows folded mail history oldest first including the displayed item and renders each id", async () => {
+    const result = await search(pool, { query: "copper lantern", exact: true, source: ["gmail"], rerank: false });
+    const hit = result.results[0]!;
+    expect(result.results).toHaveLength(1);
+    expect(hit.id).toBe("mail-delivered");
+    expect(hit.more).toBe(2);
+    expect(hit.folded).toEqual([
+      { id: "mail-ordered", date: "2026-01-01T12:00:00.000Z", title: "Ordered: copper lantern" },
+      { id: "mail-shipped", date: "2026-01-02T12:00:00.000Z", title: "Shipped: copper lantern" },
+      { id: "mail-delivered", date: "2026-01-03T12:00:00.000Z", title: "Delivered: copper lantern" },
+    ]);
+    const rendered = renderResults(result.results);
+    expect(rendered).toContain("Jan 1, 2026 · Ordered: copper lantern (mail-ordered)");
+    expect(rendered).toContain("Jan 2, 2026 · Shipped: copper lantern (mail-shipped)");
+    expect(rendered).toContain("Jan 3, 2026 · Delivered: copper lantern (mail-delivered)");
+    expect(rendered.indexOf("Jan 1, 2026 · Ordered:")).toBeLessThan(rendered.indexOf("Jan 2, 2026 · Shipped:"));
+  });
+
+  it("quotes the first literal match rather than a later denser window and abstains only on no match", async () => {
+    const result = await search(pool, { query: "cerulean hinge", exact: true, source: ["note"], rerank: false });
+    expect(result.results.map(hit => hit.id)).toEqual(["window", "phrase-new", "phrase-old"]);
+    expect(result.results[0]!.quote).toContain("FIRST cerulean hinge");
+    expect(result.results[0]!.quote).not.toContain("SECOND");
+    expect(await search(pool, { query: "nonexistent-phrase-%_[x]", exact: true, rerank: false })).toMatchObject({ results: [], nothing_strong: true });
+  });
+
+  it("finds unchunked items with embedding and reranking unavailable", async () => {
+    await pool.query(`INSERT INTO memory.items(id,source,kind,at,title,body,hash,origin)
+      VALUES ('unchunked','note','note','2026-01-06','Waiting to index','raw literal evidence','fixture','event')`);
+    const { OLLAMA_URL, RERANK_URL } = process.env;
+    process.env.OLLAMA_URL = "http://127.0.0.1:1";
+    process.env.RERANK_URL = "http://127.0.0.1:1";
+    try {
+      const result = await search(pool, { query: "raw literal evidence", exact: true });
+      expect(result.results.map(hit => hit.id)).toEqual(["unchunked"]);
+      expect(result.results[0]).toMatchObject({ quote: "raw literal evidence", strength: "strong" });
+    } finally {
+      if (OLLAMA_URL === undefined) delete process.env.OLLAMA_URL; else process.env.OLLAMA_URL = OLLAMA_URL;
+      if (RERANK_URL === undefined) delete process.env.RERANK_URL; else process.env.RERANK_URL = RERANK_URL;
+    }
+  });
 });

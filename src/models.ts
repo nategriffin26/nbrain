@@ -10,6 +10,8 @@ type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export const ROLE_SEEDS = {
   reading: { model: "anthropic/claude-haiku-5-5", thinking: "off" },
+  // library cards and saved-page enrichment: Haiku skipped 901 of 2,590 bookmarks, so new cards are written on the curator's model
+  cards: { model: "anthropic/claude-sonnet-5-5", thinking: "off" },
   extraction: { model: "anthropic/claude-haiku-5-5", thinking: "off" },
   // the curator and now.md judge what the owner's words change in the profile and what is in flight: the notes pass
   // before them got its fixtures right 0 of 3 runs with thinking off, 3 of 3 with low

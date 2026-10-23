@@ -87,7 +87,7 @@ All in `$BRAIN_HOME/env`; [`env.example`](../env.example) has each one with a co
 | `RERANK_URL` | | The reranker; unset skips reranking |
 | `LLM_URLS` | `http://127.0.0.1:4000` | OpenAI-compatible endpoints, tried in order |
 | `LLM_API_KEY`, `LLM_API_KEY_FILE` | | The key, or a file holding it |
-| `MODEL_READING`, `MODEL_EXTRACTION`, `MODEL_CURATOR` | `src/models.ts` | Per-role model, `model` or `model@thinking`: reading (library cards, enrichment, image descriptions), extraction (records), curator (the curator and now) |
+| `MODEL_READING`, `MODEL_CARDS`, `MODEL_EXTRACTION`, `MODEL_CURATOR` | `src/models.ts` | Per-role model, `model` or `model@thinking`: reading (image descriptions), cards (library cards, enrichment), extraction (records), curator (the curator and now) |
 | `CONNECTORS` | none | `gmail`, `imessage`, `calendar`, `x`, `omp` |
 | `EXECUTOR_MCP_URL` | `http://127.0.0.1:4312/mcp` | Executor's MCP server |
 | `OMP_SESSIONS` | `~/.omp/agent/sessions` | omp session files |

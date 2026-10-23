@@ -6,6 +6,7 @@
 -- pg_search wants pgvector's type in public.
 create extension if not exists vector schema public;
 create extension if not exists pg_search;
+create extension if not exists pg_trgm;
 create schema if not exists brain;
 create schema if not exists memory;
 
@@ -50,7 +51,7 @@ create table if not exists brain.cursors (
 	updated_at timestamptz not null default now()
 );
 
--- The model and thinking level of a role (reading, extraction, notes); a role without a row uses the seed in models.ts.
+-- The model and thinking level of a role (reading, cards, extraction, curator); a role without a row uses the seed in models.ts.
 create table if not exists brain.model_roles (
 	role text primary key,
 	model text,
@@ -90,6 +91,8 @@ create unique index if not exists items_by_ext on memory.items (source, ext_id);
 create index if not exists items_by_thread on memory.items (source, thread, at);
 create index if not exists items_by_at on memory.items (at);
 create index if not exists items_by_event on memory.items (event_id);
+-- search's exact mode (ILIKE on body or title): a full scan of the items took ~2 s.
+create index if not exists items_exact on memory.items using gin (body gin_trgm_ops, title gin_trgm_ops);
 
 -- People and organisations; handles are folded (addresses lowercased, phones +digits). self is the owner.
 -- kind: person | org | self

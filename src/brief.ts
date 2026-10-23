@@ -5,7 +5,7 @@
 // loading (skills and styles, then the library cards of strong bookmarks and saved pages), each with how. When it runs
 // long, the near lines go first, then the other now blocks, then the record results, then the tail of the project's
 // block; Always lines and pointers stay.
-// `nbrain brief` asks memory-mcp for one over HTTP, so the token's scopes apply (the omp extension runs it).
+// `nbrain brief` asks memory-mcp for one over HTTP, so the token's scopes apply.
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename } from "node:path";
@@ -181,7 +181,7 @@ export function ompToken(servers: OmpServers | undefined, url: URL): string | un
 }
 
 /** `nbrain brief --task "…" [--project …]`: a brief from memory-mcp on stdout, as the token in NBRAIN_TOKEN, else the
- *  one omp's mcp.json holds for the brain (the omp extension runs this with neither set). */
+ *  one omp's mcp.json holds for the brain. */
 export async function briefCommand(args: string[]): Promise<void> {
   const flag = (name: string) => { const at = args.indexOf(`--${name}`); return at < 0 ? undefined : args[at + 1]; };
   const task = flag("task"), project = flag("project");

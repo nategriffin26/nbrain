@@ -6,12 +6,11 @@ memory-mcp serves one MCP endpoint, `http://127.0.0.1:8830/mcp` (Streamable HTTP
 
 | Client | Connects through | The brief |
 |---|---|---|
-| omp | `nbrain connect omp`: HTTP, plus the `nbrain-brief` extension | Added to each main session on its first prompt, for that prompt and the session's directory |
-| Claude Code, Cursor | `nbrain connect claude-code` or `cursor`: HTTP | The server's instructions tell the agent to call `brief` first |
+| omp, Claude Code, Cursor | `nbrain connect omp`, `claude-code` or `cursor`: HTTP | The server's instructions tell the agent to call `brief` first |
 | Codex, Claude Desktop | `nbrain connect codex` or `claude-desktop`: the stdio relay | The same |
 | ChatGPT, claude.ai | A custom connector through the [OAuth door](#oauth-for-cloud-chat-apps) | The same; ChatGPT deep research calls `search` and `fetch` |
 
-Every client also gets the skills catalog in the server's instructions, every skill file as a `skill://` resource and the MCP Skills extension. A host that loads MCP prompts gets the brief as the `about-<owner>` prompt too. The omp extension skips subagents and never briefs a resumed session twice; when the brain does not answer, it shows one short notice and adds nothing.
+Every client also gets the skills catalog in the server's instructions, every skill file as a `skill://` resource and the MCP Skills extension. A host that loads MCP prompts gets the brief as the `about-<owner>` prompt too. No client gets a brief pushed in before the agent asks: on ten real tasks, sessions that called `brief` themselves beat sessions handed one at the start in 7 and lost 1 (blind judge, both orders).
 
 ## nbrain connect
 
@@ -40,8 +39,6 @@ Merged into `~/.omp/agent/mcp.json`:
   }
 }
 ```
-
-`integrations/omp/nbrain-brief.ts` is linked into `~/.omp/agent/extensions/`. It runs `nbrain brief` with the token above.
 
 ### Claude Code
 

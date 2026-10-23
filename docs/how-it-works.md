@@ -50,7 +50,8 @@ Reciprocal rank fusion merges them, one hit per item. A local cross-encoder (Qwe
 What comes back is built to be read honestly:
 
 - **Strong or weak.** A result is strong when the reranker judges that it answers the query, it falls in the dates the query names (by when it was sent, or a nearby message in its conversation naming that day), and it holds the names the query names. Without the reranker, a result is strong only when it holds every word that matters. `nothing_strong: true` means no result is strong, and the tool tells agents to say so instead of guessing.
-- **Folding.** One mail thread, one order's mails and delivery notices, and texts already shown in another hit's conversation fold into one result with `more: n`.
+- **Folding.** One mail thread, one order's mails and delivery notices, and texts already shown in another hit's conversation fold into one result with `more: n`. A result that folds look-alikes lists each of them (date, title, id) in `folded`, itself included, oldest first: the sequence (ordered, shipped, delivered; a value set, then changed) is what says which one is current, so folding keeps it.
+- **Exact.** `exact: true` finds the query word for word (case-insensitive) in an item's text or title, newest first, every match strong: a name, an order number, a phrase someone wrote. It uses no model, keeps every filter and the private and code rules, and reads a trigram index: usually well under half a second, up to about two for very common words or two-letter strings, which trigrams can't narrow.
 - **Conversations.** A text, or a bot chat turn imported in pieces, is shown with the messages around it in its thread, and nearby conversations in one thread show as one.
 - **Dates.** `from` and `to` filter (a bare date is a whole local day, `to` included). Dates written in the query rank, but never filter.
 - **People.** `person` keeps only items that person sent or received, matched by person record, not by name text. Similar names stay separate people; a half-remembered name finds the closest ones, marked `close`.
@@ -110,7 +111,7 @@ Every X bookmark and saved page is read once per version by the reading model, w
 
 Each reference card whose link is a web page gets captures under `$BRAIN_HOME/captures`: a full-page screenshot, an MHTML archive and, when the page moves on load, a ten-second WebM recording. Google Chrome runs headless in a throwaway profile for each page. A page that is not a web page, or fails, is marked and not tried again. Without Chrome the run stops, logs it, and leaves the cards to try later.
 
-`library` finds cards for a plain description ("drag and drop for React", "dense dashboard tables"), each strong or weak as search judged it. `library_mark` records what came of trying one, in a line. The Sunday message's library part counts the cards the week added and lists up to five untried cards for projects in flight, one per project first, this week's first.
+`library` finds cards for a plain description ("drag and drop for React", "dense dashboard tables"), each strong or weak as search judged it. With no strong card it also returns up to five strong raw matches among bookmarks and saves that have no card, as `uncarded`. `library_mark` records what came of trying one, in a line. The Sunday message's library part counts the cards the week added and lists up to five untried cards for projects in flight, one per project first, this week's first.
 
 ## The brief
 
@@ -121,7 +122,7 @@ Each reference card whose link is a web page gets captures under `$BRAIN_HOME/ca
 3. **Earlier on this.** Up to three strong record results for the task, the project's own coding sessions first, so an agent does not redo what was done or reopen what was settled.
 4. **Worth loading.** Up to three: the default style when the task is screen work, skills search finds strong for it, and strong library cards, each with the call that loads it.
 
-Within the budget, room goes first to the pointers and Always lines; past it, the near lines go first, then other now blocks, then the record results. Scopes apply: a work token's brief has no `life.md`, Life block, mail or texts. `nbrain brief --task "…" [--project …]` asks memory-mcp for one over HTTP, and the omp extension uses it to brief each main session.
+Within the budget, room goes first to the pointers and Always lines; past it, the near lines go first, then other now blocks, then the record results. Scopes apply: a work token's brief has no `life.md`, Life block, mail or texts. Agents call it themselves (the server's instructions say to, first); it is never pushed into a session, because on ten real tasks sessions that called it beat sessions handed it at the start 7 to 1. `nbrain brief --task "…" [--project …]` prints one from memory-mcp over HTTP.
 
 ## The Sunday message
 

@@ -1,15 +1,18 @@
 // Recall checks every expected fact against the same ten results agents see. Misses name the stage that lost the answer.
+// A question the record cannot answer (`absent`: a false premise, a thing that never happened) passes only when search
+// says nothing strong: an honest "nothing" is what the asker needs, and a confident wrong hit is the failure.
 // The owner's question file and recall-<date>.json live in BRAIN_HOME/eval; the weekly checkup reads the eval cursor.
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import pg, { type Pool } from "pg";
 import { BRAIN_HOME } from "../config.js";
 import { cursorFailed, cursorOk, readCursor } from "../events/store.js";
-import { renderResults, search } from "../memory/search.js";
+import { renderResults, search, type SearchInput, type SearchResult } from "../memory/search.js";
 import { localTime } from "../time.js";
 
-export interface Question { id: string; category: string; set?: string; query: string; expected?: string[]; facts?: string[]; absent?: boolean }
-export interface Result { id: string; category: string; set: string; ok: boolean; stage: string; missing: string[]; gold: string[]; top: string[]; ms: number }
+/** `filters` are part of the question ("… in 2025" with from/to): a question asked without them is a different one. */
+export interface Question { id: string; category: string; set?: string; query: string; expected?: string[]; facts?: string[]; absent?: boolean; filters?: Pick<SearchInput, "person" | "source" | "from" | "to"> }
+export interface Result { id: string; category: string; set: string; absent?: true; ok: boolean; stage: string; missing: string[]; gold: string[]; top: string[]; ms: number }
 
 const normal = (text: string) => text.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^a-z0-9$@+.']+/g, " ").trim();
 
@@ -40,15 +43,33 @@ async function held(pool: pg.Pool, fact: string): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+/** An absent question passes on nothing strong, whatever its (empty) facts; any other on every fact shown. */
+export function scoreQuestion(question: Question, found: Pick<SearchResult, "results" | "nothing_strong">): { ok: boolean; missing: string[] } {
+  if (question.absent) return { ok: found.nothing_strong === true, missing: [] };
+  const shown = normal(renderResults(found.results));
+  const missing = (question.facts ?? []).filter(fact => !shown.includes(normal(fact)));
+  return { ok: missing.length === 0, missing };
+}
+
+/** The search a question asks: its query, with its own filters, over the ten results agents see. */
+export function searchInput(question: Question): SearchInput {
+  return { ...question.filters, query: question.query, limit: 10, trace: true };
+}
+
 export async function runRecall(pool: pg.Pool, questions: readonly Question[]): Promise<Result[]> {
   const results: Result[] = [];
-  for (const question of questions.filter(each => !each.absent && (each.facts?.length ?? 0) > 0)) {
+  for (const question of questions.filter(each => each.absent || (each.facts?.length ?? 0) > 0)) {
     const started = Date.now();
-    const { results: hits, trace } = await search(pool, { query: question.query, limit: 10, trace: true });
+    const found = await search(pool, searchInput(question));
     const ms = Date.now() - started;
-    const shown = normal(renderResults(hits));
-    const missing = question.facts!.filter(fact => !shown.includes(normal(fact)));
-    const ok = missing.length === 0;
+    const { results: hits, trace } = found;
+    const { ok, missing } = scoreQuestion(question, found);
+    if (question.absent) {
+      // the strong hits are what answered a question with no answer
+      const strong = hits.filter(hit => hit.strength === "strong").map(hit => hit.id);
+      results.push({ id: question.id, category: question.category, set: question.set ?? "", absent: true, ok, stage: ok ? "ok" : "strong", missing, gold: [], top: strong.slice(0, 5), ms });
+      continue;
+    }
     let stage = "ok";
     let gold: string[] = [];
     if (!ok) {
@@ -63,7 +84,11 @@ export async function runRecall(pool: pg.Pool, questions: readonly Question[]): 
   return results;
 }
 
-export function summarize(results: readonly Result[]) {
+/** `ok`/`n` count the answerable questions; `abstain` the ones with no answer, kept apart so recall stays comparable
+ *  with runs before they existed. */
+export function summarize(all: readonly Result[]) {
+  const results = all.filter(each => !each.absent);
+  const absent = all.filter(each => each.absent);
   const tally = (key: (result: Result) => string) => {
     const out: Record<string, string> = {};
     for (const [name, group] of Object.entries(Object.groupBy(results, key))) out[name] = `${group!.filter(each => each.ok).length}/${group!.length}`;
@@ -75,6 +100,7 @@ export function summarize(results: readonly Result[]) {
   const stale = results.filter(each => each.stage === "stale").map(each => each.id);
   return {
     n: results.length, ok: results.filter(each => each.ok).length, stale: stale.length,
+    ...(absent.length ? { abstain: { n: absent.length, ok: absent.filter(each => each.ok).length } } : {}),
     // Summary consumers get a short list of questions to update, by id.
     ...(stale.length ? { needsUpdate: stale.join(", ").slice(0, 120) } : {}),
     medianMs: ms[Math.floor(ms.length / 2)] ?? 0, p90Ms: ms[Math.floor(ms.length * 0.9)] ?? 0, bySet: tally(each => each.set || "-"), byCategory: tally(each => each.category), stages,
@@ -122,7 +148,7 @@ export async function evalCommand(args: string[]): Promise<void> {
   try {
     const { summary, results, out } = await evaluate(pool, args[0]);
     console.info(JSON.stringify(summary, null, 1));
-    for (const each of results.filter(result => !result.ok)) console.info(`${each.id} ${each.stage} missing ${JSON.stringify(each.missing)}`);
+    for (const each of results.filter(result => !result.ok)) console.info(`${each.id} ${each.stage} ${each.absent ? `answered by ${each.top.join(", ")}` : `missing ${JSON.stringify(each.missing)}`}`);
     console.info(`→ ${out}`);
   } finally {
     await pool.end();

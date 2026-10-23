@@ -20,12 +20,14 @@ import { cleanText, type DateMention, dateMention, fold, foldHandle, quoteOf, qu
 /** `rerank: false` skips the cross-encoder (it costs ~0.7 s and moved one question in 172); search keeps it.
  *  `trace` returns each stage's items (the eval, src/eval/recall.ts, says where a miss was lost). `private` lets in what
  *  the owner marked private (memory.private), left out otherwise. `cards`: only items with a library card that matches
- *  (memory.cards; project matches any of the card's projects). */
-export interface SearchInput { query: string; person?: string; source?: string[]; from?: string; to?: string; limit?: number; rerank?: boolean; trace?: boolean; private?: boolean; cards?: { kind?: string; status?: string; project?: string } }
+ *  (memory.cards; project matches any of the card's projects). `exact`: the query word for word (case-insensitive) in an
+ *  item's text or title, newest first, every match strong. */
+export interface SearchInput { query: string; person?: string; source?: string[]; from?: string; to?: string; limit?: number; rerank?: boolean; trace?: boolean; private?: boolean; exact?: boolean; cards?: { kind?: string; status?: string; project?: string } }
 /** `record`: what a record read from the item (type, when, status, ref), which search found it by. `strength`: strong when
- *  it answers the query (calibrated on the recall eval), weak when it only shares words or meaning. `more`: look-alikes
- *  folded into it (one order's mails, one thread's messages). */
-export interface Result { id: string; chunk: string; title: string; url?: string; date: string; who: string; source: string; kind: string; context?: string; record?: string; quote: string; strength: "strong" | "weak"; more?: number; why: string }
+ *  it answers the query (calibrated on the recall eval), weak when it only shares words or meaning. `folded`: the
+ *  look-alikes folded into it (one order's mails, one thread's messages), oldest first, so the sequence that makes one
+ *  value current survives the fold; `more` is their count. */
+export interface Result { id: string; chunk: string; title: string; url?: string; date: string; who: string; source: string; kind: string; context?: string; record?: string; quote: string; strength: "strong" | "weak"; more?: number; folded?: { id: string; date: string; title: string }[]; why: string }
 /** `results` (with id, title, url) is also the shape ChatGPT's deep research reads. `nothing_strong`: no result is strong. */
 export interface SearchResult { results: Result[]; nothing_strong?: true; person?: { id: string; name: string; close?: true }[]; people?: { id: string; name: string }[]; date?: string; ms: number; channels: Record<string, number>; trace?: { channels: Record<string, string[]>; fused: string[] } }
 
@@ -235,6 +237,7 @@ async function rerank(query: string, documents: string[]): Promise<Map<number, n
 
 export async function search(pool: Pool, input: SearchInput, now = new Date()): Promise<SearchResult> {
   const started = Date.now();
+  if (input.exact && !input.query.trim()) return { results: [], nothing_strong: true, ms: Date.now() - started, channels: { exact: 0 } };
   const limit = Math.min(30, Math.max(1, Math.round(input.limit ?? 10)));
   const sql = new Sql();
   const clauses = ["i.source <> 'memory'", currentSql("i")];
@@ -258,6 +261,10 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   if (input.from) clauses.push(`i.at >= ${sql.add(bound(input.from, false))}`);
   if (input.to) clauses.push(`i.at < ${sql.add(bound(input.to, true))}`);
   const where = clauses.join(" AND ");
+  if (input.exact) {
+    const result = await exactSearch(pool, input, where, sql, limit, includeCodes);
+    return { ...result, ...(person ? { person: person.map(({ id, name, close }) => ({ id, name, ...(close ? { close } : {}) })) } : {}), ms: Date.now() - started };
+  }
 
   const date = dateMention(input.query, now);
   const queryTerms = queryWords(input.query);
@@ -373,39 +380,13 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   }
   const strong = (row: HitRow) => strengths.get(row.id)!;
   candidates.sort((a, b) => Number(strong(b) === "strong") - Number(strong(a) === "strong"));
-  // a text near a conversation already picked joins it, and the messages between them are filled in below
-  const entries: { row: HitRow; lines?: Line[]; joined: boolean; more: number }[] = [];
-  const shown = new Map<string, typeof entries[number]>();
-  const folded = new Map<string, typeof entries[number]>();
-  for (const row of candidates) {
-    const duplicate = shown.get(row.item_id) ?? folded.get(foldKey(row)) ?? entries.find(entry => sameOrder(entry.row, row));
-    if (duplicate) { duplicate.more++; continue; }
-    const lines = talk.get(row.item_id);
-    if (entries.length === limit) continue;
-    const near = lines && entries.find(entry => entry.lines && entry.row.source === row.source && entry.row.thread === row.thread
-      && lines[0]!.at.getTime() - entry.lines.at(-1)!.at.getTime() <= JOIN_MS && entry.lines[0]!.at.getTime() - lines.at(-1)!.at.getTime() <= JOIN_MS);
-    if (near) {
-      near.lines = [...new Map([...near.lines!, ...lines].map(line => [line.id, line])).values()].sort((a, b) => a.at.getTime() - b.at.getTime());
-      near.joined = true;
-      near.more++;
-      for (const line of lines) shown.set(line.id, near);
-    } else {
-      const entry = { row, ...(lines ? { lines } : {}), joined: false, more: 0 };
-      entries.push(entry);
-      folded.set(foldKey(row), entry);
-      for (const line of lines ?? []) shown.set(line.id, entry);
-    }
-  }
-  await Promise.all(entries.filter(entry => entry.joined).map(async entry => {
-    const between = await span(pool, entry.row, entry.lines![0]!.at, entry.lines!.at(-1)!.at, input.private, includeCodes);
-    if (between.length <= JOINED_LINES) entry.lines = between;
-  }));
-  const results = entries.map(({ row, lines, more }): Result => {
+  const entries = await groupHits(pool, candidates, talk, limit, input.private, includeCodes);
+  const results = entries.map(({ row, lines, more, folded }): Result => {
     const text = body.get(row.item_id) ?? row.text;
     const record = body.get(best.get(row.item_id)?.record ?? "");
     return {
       id: row.item_id, chunk: `${row.item_id}#${row.part}`, title: row.title, date: row.at.toISOString(), who: row.who, source: row.source, kind: row.kind,
-      strength: strong(row), ...(more ? { more } : {}),
+      strength: strong(row), ...(more ? { more } : {}), ...(folded.length > 1 ? { folded } : {}),
       ...(row.url ? { url: row.url } : {}), ...(row.context ? { context: row.context } : {}), ...(record ? { record: recordLine(record) } : {}),
       quote: lines ? renderTalk(lines, row, words) : quoteOf(text === "" ? row.title : text, words, QUOTE_CHARS, body.has(row.item_id) ? row.start_at : 0),
       why: Object.keys(sets).filter(name => sets[name]!.has(row.item_id)).join(" · "),
@@ -420,12 +401,90 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
 
 interface HitRow { id: number; item_id: string; part: number; start_at: number; text: string; context: string; title: string; at: Date; who: string; source: string; kind: string; origin: string; url: string | null; thread: string | null; same_as: string | null; org: string | null; ref: string | null }
 
+interface HitGroup { row: HitRow; lines?: Line[]; joined: boolean; more: number; folded: NonNullable<Result["folded"]> }
+
+async function groupHits(pool: Pool, candidates: HitRow[], talk: Map<string, Line[]>, limit: number, privateItems = false, includeCodes = false): Promise<HitGroup[]> {
+  const entries: HitGroup[] = [];
+  const shown = new Map<string, HitGroup>();
+  const folded = new Map<string, HitGroup>();
+  const history = (row: HitRow) => ({ id: row.item_id, date: row.at.toISOString(), title: row.title });
+  for (const row of candidates) {
+    // Conversation overlap is already visible in the quote, not a separate history of look-alikes.
+    const overlap = shown.get(row.item_id);
+    if (overlap) { overlap.more++; continue; }
+    const duplicate = folded.get(foldKey(row)) ?? entries.find(entry => sameOrder(entry.row, row));
+    if (duplicate) {
+      duplicate.more++;
+      duplicate.folded.push(history(row));
+      continue;
+    }
+    const lines = talk.get(row.item_id);
+    if (entries.length === limit) continue;
+    const near = lines && entries.find(entry => entry.lines && entry.row.source === row.source && entry.row.thread === row.thread
+      && lines[0]!.at.getTime() - entry.lines.at(-1)!.at.getTime() <= JOIN_MS && entry.lines[0]!.at.getTime() - lines.at(-1)!.at.getTime() <= JOIN_MS);
+    if (near) {
+      near.lines = [...new Map([...near.lines!, ...lines].map(line => [line.id, line])).values()].sort((a, b) => a.at.getTime() - b.at.getTime());
+      near.joined = true;
+      near.more++;
+      for (const line of lines) shown.set(line.id, near);
+    } else {
+      const entry = { row, ...(lines ? { lines } : {}), joined: false, more: 0, folded: [history(row)] };
+      entries.push(entry);
+      folded.set(foldKey(row), entry);
+      for (const line of lines ?? []) shown.set(line.id, entry);
+    }
+  }
+  await Promise.all(entries.filter(entry => entry.joined).map(async entry => {
+    const between = await span(pool, entry.row, entry.lines![0]!.at, entry.lines!.at(-1)!.at, privateItems, includeCodes);
+    if (between.length <= JOINED_LINES) entry.lines = between;
+  }));
+  for (const entry of entries) entry.folded.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  return entries;
+}
+
+const WHO = `CASE WHEN i.from_me THEN ${OWNER_SQL} || coalesce(' to ' || nullif((SELECT string_agg(p.name, ', ') FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'recipient' AND p.kind <> 'self'), ''), '')
+  ELSE coalesce((SELECT p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'sender' AND NOT (p.kind = 'person' AND i.source = 'imessage' AND i.sender ~ '^[0-9]{1,6}$') LIMIT 1), i.sender_name, i.sender, '') || coalesce(' to ' || nullif((SELECT string_agg(p.name, ', ') FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'recipient' AND p.kind <> 'self'), ''), '') END`;
+
+/** Exact search reads the item, not its derived chunks or a model's interpretation of the query. */
+async function exactSearch(pool: Pool, input: SearchInput, where: string, sql: Sql, limit: number, includeCodes: boolean): Promise<Omit<SearchResult, "ms">> {
+  const pattern = sql.add(`%${input.query.replace(/[\\%_]/g, "\\$&")}%`);
+  const { rows } = await pool.query<HitRow>(`WITH matches AS MATERIALIZED (
+      SELECT i.* FROM memory.items i WHERE ${where} AND (i.body ILIKE ${pattern} OR i.title ILIKE ${pattern})
+      ORDER BY i.at DESC, i.id LIMIT ${CHANNEL_TOP}
+    )
+    SELECT 0 AS id, i.id AS item_id, 0 AS part, 0 AS start_at, i.body AS text, '' AS context,
+      coalesce(nullif(i.title, ''), i.thread_title, CASE i.source WHEN 'imessage' THEN 'Texts' ELSE i.source END) AS title,
+      i.at, i.source, i.kind, i.origin, i.url, i.thread, rec.same_as, rec.org, rec.ref, ${WHO} AS who
+    FROM matches i LEFT JOIN LATERAL (
+      SELECT r.same_as, r.org, r.ref FROM memory.records r WHERE r.item_id = i.id AND r.type IN ('order', 'appointment') ORDER BY r.at DESC LIMIT 1
+    ) rec ON true ORDER BY i.at DESC, i.id`, sql.params);
+  const candidates = rows.map(row => ({ ...row, at: new Date(row.at) }));
+  const talk = await conversations(pool, candidates.filter(row => row.thread !== null && (row.source === "imessage" || row.source === "chat" && row.origin === "context")).map(row => row.item_id), input.private, includeCodes);
+  const entries = await groupHits(pool, candidates, talk, limit, input.private, includeCodes);
+  const results = entries.map(({ row, lines, more, folded }): Result => ({
+    id: row.item_id, chunk: `${row.item_id}#${row.part}`, title: row.title, date: row.at.toISOString(), who: row.who, source: row.source, kind: row.kind,
+    strength: "strong", ...(more ? { more } : {}), ...(folded.length > 1 ? { folded } : {}), ...(row.url ? { url: row.url } : {}),
+    quote: lines ? renderTalk(lines, row, [], input.query) : exactQuote(row.text, input.query) ?? exactQuote(row.title, input.query) ?? "",
+    why: "exact",
+  }));
+  const ids = candidates.map(row => row.item_id);
+  return { results, ...(results.length ? {} : { nothing_strong: true }), channels: { exact: candidates.length },
+    ...(input.trace ? { trace: { channels: { exact: ids }, fused: ids } } : {}) };
+}
+
+function exactQuote(text: string, query: string): string | undefined {
+  const match = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu").exec(text);
+  if (!match) return undefined;
+  const start = Math.max(0, match.index - Math.round(QUOTE_CHARS / 5));
+  const end = Math.max(start + QUOTE_CHARS, match.index + match[0].length);
+  return `${start ? "…" : ""}${cleanText(text.slice(start, end)).replace(/\s+/g, " ").trim()}${end < text.length ? "…" : ""}`.toWellFormed();
+}
+
 /** The chunks' text and their items' title, date and who: "<owner> to Sam", "Bank Alerts", "@example". */
 async function hitRows(pool: Pool, ids: number[]): Promise<Map<number, HitRow>> {
   const { rows } = await pool.query<HitRow>(
     `SELECT c.id::int AS id, c.item_id, c.part, c.start_at, c.text, c.context, coalesce(nullif(i.title, ''), i.thread_title, CASE i.source WHEN 'imessage' THEN 'Texts' ELSE i.source END) AS title, i.at, i.source, i.kind, i.origin, i.url, i.thread, rec.same_as, rec.org, rec.ref,
-       CASE WHEN i.from_me THEN ${OWNER_SQL} || coalesce(' to ' || nullif((SELECT string_agg(p.name, ', ') FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'recipient' AND p.kind <> 'self'), ''), '')
-         ELSE coalesce((SELECT p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'sender' AND NOT (p.kind = 'person' AND i.source = 'imessage' AND i.sender ~ '^[0-9]{1,6}$') LIMIT 1), i.sender_name, i.sender, '') || coalesce(' to ' || nullif((SELECT string_agg(p.name, ', ') FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'recipient' AND p.kind <> 'self'), ''), '') END AS who
+       ${WHO} AS who
      FROM memory.chunks c JOIN memory.items i ON i.id = c.item_id LEFT JOIN LATERAL (SELECT r.same_as, r.org, r.ref FROM memory.records r WHERE r.item_id = i.id AND r.type IN ('order', 'appointment') ORDER BY r.at DESC LIMIT 1) rec ON true WHERE c.id = ANY($1)`,
     [ids],
   );
@@ -462,11 +521,11 @@ async function span(pool: Pool, hit: HitRow, from: Date, to: Date, privateItems 
 
 /** A conversation as short lines, "9:14 AM Sam: …" (with the day when it is not the hit's); the hit's own line quotes its
  *  best window. A neighbour Messages kept no text for (an attachment, "�") is left out. */
-function renderTalk(lines: readonly Line[], hit: HitRow, words: readonly string[]): string {
+function renderTalk(lines: readonly Line[], hit: HitRow, words: readonly string[], exact?: string): string {
   const day = (at: Date) => at.toLocaleDateString("en-US", { timeZone: ZONE, month: "short", day: "numeric" });
   return lines.filter(line => line.id === hit.item_id || !/^[\s\uFFFC\uFFFD]*$/.test(line.body)).map(line => {
     const flat = cleanText(line.body).replace(/\s+/g, " ").trim();
-    const text = line.id === hit.item_id ? quoteOf(flat, words, QUOTE_CHARS) : flat.length > TEXT_CHARS ? `${flat.slice(0, TEXT_CHARS).trimEnd()}…`.toWellFormed() : flat;
+    const text = line.id === hit.item_id ? (exact === undefined ? quoteOf(flat, words, QUOTE_CHARS) : exactQuote(line.body, exact) ?? exactQuote(hit.title, exact) ?? quoteOf(flat, [], QUOTE_CHARS)) : flat.length > TEXT_CHARS ? `${flat.slice(0, TEXT_CHARS).trimEnd()}…`.toWellFormed() : flat;
     return `${day(line.at) === day(hit.at) ? "" : `${day(line.at)}, `}${line.at.toLocaleTimeString("en-US", { timeZone: ZONE, hour: "numeric", minute: "2-digit" })} ${line.who || "?"}: ${text}`;
   }).join("\n");
 }
@@ -482,7 +541,8 @@ export function renderResults(results: readonly Result[]): string {
   if (results.length === 0) return "";
   const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   return `Record (verbatim; fetch <id> opens one; sql counts across the record):\n${results.map(hit =>
-    [`[${hit.strength} · ${day(hit.date)} · ${hit.source}${hit.who ? ` · ${hit.who}` : ""}${hit.more ? ` · ${hit.more} more` : ""}] ${hit.title} (${hit.chunk})`, hit.context, hit.record ? `Record: ${hit.record}` : "", hit.url, hit.quote].filter(Boolean).join("\n")).join("\n\n")}`;
+    [`[${hit.strength} · ${day(hit.date)} · ${hit.source}${hit.who ? ` · ${hit.who}` : ""}${hit.more ? ` · ${hit.more} more` : ""}] ${hit.title} (${hit.chunk})`, hit.context, hit.record ? `Record: ${hit.record}` : "", hit.url, hit.quote,
+      ...(hit.folded ?? []).map(item => `  ${day(item.date)} · ${item.title} (${item.id})`)].filter(Boolean).join("\n")).join("\n\n")}`;
 }
 
 // ── read ──

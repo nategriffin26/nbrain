@@ -1,6 +1,7 @@
 // The library's shape as its readers see it (the library tool, fetch card:…, the brief, the weekly digest). Cards live in
 // memory.cards (schema.sql); library/cards.ts writes and finds them.
 import type { CARD_KINDS, CARD_STATUSES } from "../mcp/contract.js";
+import type { Result } from "../memory/search.js";
 
 export type CardKind = (typeof CARD_KINDS)[number];
 export type CardStatus = (typeof CARD_STATUSES)[number];
@@ -30,4 +31,5 @@ export interface Card {
 /** `sources`: the caller's scope (undefined: every source). Private items never come back. `to`: only items dated before
  *  it (the brief's A/B cuts the record at a past task's start); not a tool input. */
 export interface FindCards { query: string; kind?: CardKind; status?: CardStatus; project?: string; limit?: number; sources?: string[]; to?: string }
-export interface FoundCards { cards: Card[]; nothing_strong?: true }
+/** `uncarded`: with no strong card, the strong raw search matches among bookmarks and saves that have no card (search's Result, fetchable by id). */
+export interface FoundCards { cards: Card[]; nothing_strong?: true; uncarded?: Result[] }

@@ -26,7 +26,7 @@ export const MCP_TOOLS = {
   },
   search: {
     description:
-      `Search everything ${OS} life touched, verbatim: texts, mail, records read from them (bills, payments, orders, appointments), calendar, X bookmarks and their articles, saved pages, research notes, chats with ${OWNER.their} bots, coding sessions, notes agents left, skills. Dates and people in the query are understood ("what did Mom text last week"). Each result is strong or weak; nothing_strong: true means there is no good answer, so say that instead of guessing from weak results. Look-alikes (one order's shipping mails, one thread's messages) fold into one result with more: n. Filters: person (only items they sent or received), source (imessage, gmail, x, calendar, record, chat, omp, saved, research, skill, note, wiki), from/to (YYYY-MM-DD or ISO). Open a result with fetch.`,
+      `Search everything ${OS} life touched, verbatim: texts, mail, records read from them (bills, payments, orders, appointments), calendar, X bookmarks and their articles, saved pages, research notes, chats with ${OWNER.their} bots, coding sessions, notes agents left, skills. Dates and people in the query are understood ("what did Mom text last week"). Each result is strong or weak; nothing_strong: true means there is no good answer, so say that instead of guessing from weak results. Look-alikes (one order's shipping mails, one thread's messages) fold into one result; folded lists each of them (date, title, id) oldest first, so the latest says what is current. exact: true finds the query word for word (a name, an order number, a phrase someone wrote), newest first. Filters: person (only items they sent or received), source (imessage, gmail, x, calendar, record, chat, omp, saved, research, skill, note, wiki), from/to (YYYY-MM-DD or ISO). Open a result with fetch.`,
     input: z.object({
       query: z.string(),
       person: z.string().optional(),
@@ -35,6 +35,7 @@ export const MCP_TOOLS = {
       to: z.string().optional(),
       limit: z.number().optional().describe("Results, default 10, at most 30"),
       private: z.boolean().optional().describe(`Include what ${O} marked private; only when ${OWNER.they} asks about it`),
+      exact: z.boolean().optional().describe("Match the query word for word (case-insensitive), newest first, instead of by meaning"),
     }),
   },
   fetch: {
@@ -69,7 +70,7 @@ export const MCP_TOOLS = {
   },
   library: {
     description:
-      `${OS} library: tools, techniques, design references, ideas, reads and people worth following that ${OWNER.they} bookmarked or saved, each a card saying what it is, why it fits ${OWNER.them}, which projects it bears on, and whether ${OWNER.they} tried it (${CARD_STATUSES.join(", ")}). Design references carry a full-page screenshot and a note on their craft. Look here before picking a tool, library, technique or look ("drag and drop for React", "dense dashboard tables"). Filters: kind, project, status.`,
+      `${OS} library: tools, techniques, design references, ideas, reads and people worth following that ${OWNER.they} bookmarked or saved, each a card saying what it is, why it fits ${OWNER.them}, which projects it bears on, and whether ${OWNER.they} tried it (${CARD_STATUSES.join(", ")}). Design references carry a full-page screenshot and a note on their craft. Look here before picking a tool, library, technique or look ("drag and drop for React", "dense dashboard tables"). When no card is strong, uncarded lists up to five strong raw matches among bookmarks and saves that have no card; open one with fetch. Filters: kind, project, status.`,
     input: z.object({
       query: z.string().min(1).max(500),
       kind: z.enum(CARD_KINDS).optional(),

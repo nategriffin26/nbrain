@@ -28,6 +28,8 @@ const FIT_FILES = new Set(["basics.md", "tastes.md", "goals.md", "projects.md", 
 const WHAT_CHARS = 300;
 const WHY_CHARS = 400;
 const CRAFT_CHARS = 500;
+/** Raw matches the library adds when no card is strong. */
+const UNCARDED_LIMIT = 5;
 
 const O = OWNER.name;
 const PROMPT = `You keep ${O}'s library: one card for each bookmark or saved page worth coming back to. You read one item (an X post ${OWNER.they} bookmarked, with the posts and pages it links, or a page ${OWNER.they} saved) and decide.
@@ -96,7 +98,7 @@ export interface Setup { system: string; projects: string[]; tags: string[]; mod
 
 export async function triageSetup(pool: Pool): Promise<Setup> {
   const projects = projectNames();
-  return { system: systemPrompt(projects), projects, tags: await usedTags(pool), model: (await roleChoice("reading")).model };
+  return { system: systemPrompt(projects), projects, tags: await usedTags(pool), model: (await roleChoice("cards")).model };
 }
 
 const textOf = (value: unknown) => typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
@@ -112,7 +114,7 @@ export async function readItem(row: ItemRow, setup: Setup): Promise<{ triage?: T
     why ? `Saved because: ${why}` : "", project ? `Saved for the project: ${project}` : "",
     saved ? enrichmentInput(chunks, setup.tags) : "",
   ].filter(Boolean).join("\n");
-  const answer = await complete({ role: "reading", session: "library-triage", maxTokens: saved ? 8000 : 1000, messages: [{ role: "system", content: setup.system }, { role: "user", content: user }] });
+  const answer = await complete({ role: "cards", session: "library-triage", maxTokens: saved ? 8000 : 1000, messages: [{ role: "system", content: setup.system }, { role: "user", content: user }] });
   return { triage: parseTriage(answer, setup.projects), ...(saved ? { enriched: parseEnrichment(answer, new Set(chunks.map(chunk => chunk.part))) } : {}), answer };
 }
 
@@ -237,14 +239,24 @@ export async function readCard(pool: Pool, id: string): Promise<Omit<Card, "stre
   return rows[0] && cardOf(rows[0]);
 }
 
-/** Cards for a plain description, best first, each strong or weak as search judged its item. */
+/** Cards for a plain description, best first, each strong or weak as search judged its item. With no strong card, `uncarded`
+ *  adds the strong raw matches among the bookmarks and saves (up to five): with no card strong for the same query, they
+ *  are items without one, and the model that read them judged 901 of 2,590 bookmarks not worth a card, which a person may
+ *  still look for. A kind, status or project filter asks for cards, which an item with none can never match, so it adds none. */
 export async function findCards(pool: Pool, input: FindCards): Promise<FoundCards> {
   const limit = Math.min(20, Math.max(1, Math.round(input.limit ?? 8)));
   const sources = CARD_SOURCES.filter(source => input.sources === undefined || input.sources.includes(source));
   if (sources.length === 0) return { cards: [], nothing_strong: true };
-  const found = await search(pool, { query: input.query, source: sources, limit, ...(input.to ? { to: input.to } : {}), cards: { ...(input.kind ? { kind: input.kind } : {}), ...(input.status ? { status: input.status } : {}), ...(input.project ? { project: input.project } : {}) } });
+  const filters = { ...(input.kind ? { kind: input.kind } : {}), ...(input.status ? { status: input.status } : {}), ...(input.project ? { project: input.project } : {}) };
+  const found = await search(pool, { query: input.query, source: sources, limit, ...(input.to ? { to: input.to } : {}), cards: filters });
   const { rows } = await pool.query<CardRow>(`${CARD_SELECT} WHERE c.item_id = ANY($1) AND NOT ${PRIVATE("i")}`, [found.results.map(result => result.id)]);
   const byItem = new Map(rows.map(row => [row.item_id, cardOf(row)]));
   const cards = found.results.flatMap(result => byItem.has(result.id) ? [{ ...byItem.get(result.id)!, strength: result.strength }] : []);
-  return { cards, ...(cards.some(card => card.strength === "strong") ? {} : { nothing_strong: true as const }) };
+  if (cards.some(card => card.strength === "strong")) return { cards };
+  // strength is relative to the result set, so a card weak under the card filter can be strong here: drop every item that has one
+  const raw = Object.keys(filters).length > 0 ? [] : (await search(pool, { query: input.query, source: sources, limit: UNCARDED_LIMIT * 2, ...(input.to ? { to: input.to } : {}) })).results.filter(result => result.strength === "strong");
+  const { rows: carded } = await pool.query<{ item_id: string }>("SELECT item_id FROM memory.cards WHERE item_id = ANY($1)", [raw.map(result => result.id)]);
+  const hasCard = new Set(carded.map(row => row.item_id));
+  const uncarded = raw.filter(result => !hasCard.has(result.id)).slice(0, UNCARDED_LIMIT);
+  return { cards, nothing_strong: true, ...(uncarded.length ? { uncarded } : {}) };
 }
