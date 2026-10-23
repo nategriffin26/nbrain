@@ -2,21 +2,21 @@
 
 The curated layer of the brain, served by `memory-mcp` (`brief`, `fetch profile`, `fetch now`). Postgres stays the record: everything verbatim, reached by search. Every change is a git commit; `git log -p` is the audit trail.
 
-| File | Scope | Changed by | Budget |
+| File | Scope | Changed by | What goes in it |
 |---|---|---|---|
-| `basics.md` | work | curator, corrections, {{OWNER}} | ≤ 1.5 KB. No address, phone, money, health or family detail |
-| `work-style.md` | work | curator, corrections, {{OWNER}} | ≤ 3.5 KB |
-| `principles.md` | work | curator, corrections, {{OWNER}} | ≤ 2.5 KB |
-| `tastes.md` | work | curator, corrections, {{OWNER}} | ≤ 2.5 KB. Design taste only |
-| `goals.md` | work | {{OWNER}}; the curator only from {{OWNER}}'s own words | ≤ 2.5 KB |
-| `projects.md` | work | curator, corrections, {{OWNER}} | ≤ 4 KB |
-| `outputs.md` | work | curator, corrections, {{OWNER}} | ≤ 2.5 KB |
-| `life.md` | life | curator, corrections, {{OWNER}} | ≤ 3.5 KB. Nothing marked private |
-| `closed.md` | work | curator, corrections | none; never in a brief |
-| `now.md` | work; `## Life` life | `now`, rewritten whole every morning | ≤ 4 KB |
-| `skills/<name>/`, `styles/<name>/` | work | agents, from finished work {{OWNER}} signed off (`skill_save`) | 150–400 lines each |
+| `basics.md` | work | curator, corrections, {{OWNER}} | Who {{OWNER}} is. No address, phone, money, health or family detail |
+| `work-style.md` | work | curator, corrections, {{OWNER}} | How {{OWNER}} works and wants to be talked to |
+| `principles.md` | work | curator, corrections, {{OWNER}} | How {{OWNER}} decides |
+| `tastes.md` | work | curator, corrections, {{OWNER}} | Design taste only |
+| `goals.md` | work | {{OWNER}}; the curator only from {{OWNER}}'s own words | Horizons and their next moves |
+| `projects.md` | work | curator, corrections, {{OWNER}} | One line per project, with its path |
+| `outputs.md` | work | curator, corrections, {{OWNER}} | Things {{OWNER}} made and published |
+| `life.md` | life | curator, corrections, {{OWNER}} | Life facts and standing rules. Nothing marked private |
+| `closed.md` | work | curator, corrections | Closed lines; never in a brief |
+| `now.md` | work; `## Life` life | `now`, rewritten whole every morning | What is in flight, ≤ 5 lines a block |
+| `skills/<name>/`, `styles/<name>/` | work | agents, from finished work {{OWNER}} signed off (`skill_save`) | How a kind of work is done; how things look |
 
-Budgets count the statements, not their source comments.
+No file has a size cap: the brief picks the lines that fit each task within its own ~1,500 tokens, so a true line never waits for room. Stale lines go by closing them, not by a cap.
 
 ## Lines
 

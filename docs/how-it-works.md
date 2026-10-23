@@ -78,7 +78,7 @@ Each statement is one `- ` line that ends with where it came from and when:
 - Plain words, outcome first. <!-- omp:abc123#4 2026-10-22 -->
 ```
 
-The source is an item id (the owner's words in a chat, session or note), `correction:<id>`, or `owner` for a line written by hand; a line with no comment is the owner's own. Lines under a `## Always` heading go into every brief of their file's scope; the rest are picked by how near they are to the task. A line is never deleted: closing it moves it to `closed.md` with the day, who closed it, why and where it came from. Each file's byte budget comes from the table in the context repo's `README.md`; an addition that would pass it is skipped.
+The source is an item id (the owner's words in a chat, session or note), `correction:<id>`, or `owner` for a line written by hand; a line with no comment is the owner's own. Lines under a `## Always` heading go into every brief of their file's scope; the rest are picked by how near they are to the task. A line is never deleted: closing it moves it to `closed.md` with the day, who closed it, why and where it came from. Files have no size cap: the brief picks the lines that fit each task within its own budget, so a true line never waits for room.
 
 ### The curator
 
@@ -96,7 +96,7 @@ Besides the owner's own hand, the curator (`src/curator.ts`) is the only writer 
 - A block per desk under `NOW_DESKS` with fresh files, a fresh `memory/<desk>/journal.md`, or chats and notes this week.
 - A `Life` block (life scope) from the next 14 days: calendar, bills due, appointments and commitments, and what the owner told the bots this week.
 
-Corrections from the last two weeks override what they contradict. A work block has at most four lines plus when it was last touched; the whole file stays under 4 KB by dropping the blocks touched longest ago. Under each block's heading, `<!-- dirs: … -->` names the directories and names it answers to, so a brief for a project or a working directory finds its block.
+Corrections from the last two weeks override what they contradict. A work block has at most four lines plus when it was last touched, since the brief shows a project's block whole. Under each block's heading, `<!-- dirs: … -->` names the directories and names it answers to, so a brief for a project or a working directory finds its block.
 
 ## The library
 

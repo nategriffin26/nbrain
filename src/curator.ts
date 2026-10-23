@@ -70,9 +70,9 @@ export function closeLine(texts: Texts, line: ProfileLine, day: string, by: stri
 
 /** Apply closes, then adds. A close names a statement by its file:line in `seen`, the files as the model was shown them,
  *  and lands on that exact line wherever it sits in `texts` now; a line changed or gone since is skipped. Outside a
- *  correction it may not touch a line a correction set. An add already in its file, or one that takes the file past its
- *  budget, is skipped. */
-export function applyEdits(texts: Texts, edits: Edits, rules: { day: string; correction: boolean; budgets: Record<string, number> }, seen: Texts = texts): Applied {
+ *  correction it may not touch a line a correction set. An add already in its file is skipped. Files have no size cap:
+ *  the brief picks lines per task within its own budget, so a true line never waits for room. */
+export function applyEdits(texts: Texts, edits: Edits, rules: { day: string; correction: boolean }, seen: Texts = texts): Applied {
   let out = { ...texts };
   const applied: string[] = [], skipped: Applied["skipped"] = [];
   const parsed = new Map([...PROFILE].map(file => [file, parseProfile(file, texts[file] ?? "")]));
@@ -98,18 +98,10 @@ export function applyEdits(texts: Texts, edits: Edits, rules: { day: string; cor
     if (!PROFILE.has(add.file)) { skipped.push({ op: add, reason: "not a profile file" }); continue; }
     const wanted = clean(add.text).toLowerCase();
     if (wanted === "" || parseProfile(add.file, text).some(line => clean(line.text).toLowerCase() === wanted)) { skipped.push({ op: add, reason: "already there" }); continue; }
-    const next = insertRaw(text, add.section, formatLine(add.text, add.sources, add.day));
-    const budget = rules.budgets[add.file];
-    if (budget && Buffer.byteLength(stripSources(next)) > budget) { skipped.push({ op: add, reason: `over its ${budget} byte budget` }); continue; }
-    out = { ...out, [add.file]: next };
+    out = { ...out, [add.file]: insertRaw(text, add.section, formatLine(add.text, add.sources, add.day)) };
     applied.push(`add ${add.file}: ${clean(add.text)}`);
   }
   return { texts: out, applied, skipped };
-}
-
-/** Each file's budget from the context repo's README table ("≤ 3.5 KB"), in bytes of statements. */
-export function budgets(readme: string): Record<string, number> {
-  return Object.fromEntries([...readme.matchAll(/^\|\s*`([^`]+)`\s*\|.*?≤\s*([\d.]+)\s*KB/gm)].map(match => [match[1]!, Number(match[2]) * 1000]));
 }
 
 const readText = (name: string) => readFile(`${CONTEXT}/${name}`, "utf8").catch(() => "");
@@ -259,7 +251,7 @@ async function applyCorrection(pool: Pool, correction: Correction): Promise<stri
       close: reply.close.map(close => ({ ...close, sources: [source] })),
       add: reply.add.map(add => ({ ...add, sources: [source], day })),
     };
-    const result = applyEdits(texts, edits, { day, correction: true, budgets: budgets(await readText("README.md")) }, seen);
+    const result = applyEdits(texts, edits, { day, correction: true }, seen);
     for (const each of result.skipped) console.warn(`curator: ${source}: skipped ${JSON.stringify(each.op)}: ${each.reason}`);
     return commit(await save(texts, result.texts), `correction ${correction.id}: ${clean(reply.summary || result.applied.join("; ")).slice(0, 200)}`, correction.by);
   });
@@ -419,7 +411,7 @@ export async function nightly(pool: Pool, now = new Date()): Promise<string[]> {
     for (const op of [...edits.close.map(close => ({ close: [close], add: [] })), ...edits.add.map(add => ({ close: [], add: [add] }))]) {
       const id = await exclusive(async () => {
         const texts = await readTexts();
-        const result = applyEdits(texts, op, { day, correction: false, budgets: budgets(await readText("README.md")) }, seen);
+        const result = applyEdits(texts, op, { day, correction: false }, seen);
         for (const each of result.skipped) console.warn(`curator: skipped ${JSON.stringify(each.op)}: ${each.reason}`);
         if (!result.applied.length) return undefined;
         return commit(await save(texts, result.texts), `curator: ${result.applied[0]!.slice(0, 200)} (${[...op.close, ...op.add][0]!.sources.join(", ")})`, "curator");

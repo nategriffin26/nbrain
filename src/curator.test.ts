@@ -46,7 +46,7 @@ const workStyle = `# How Alex works
 - Use tabs. <!-- chat:turn:a1 2026-10-19 -->
 `;
 const texts: Texts = { "work-style.md": workStyle, "closed.md": "" };
-const rules = { day: "2026-10-22", budgets: {} };
+const rules = { day: "2026-10-22" };
 
 it("keeps a line a correction set when the nightly pass tries to close it, and lets a later correction close it", () => {
   const close = { file: "work-style.md", line: 7, reason: "Alex said tests can wait", sources: ["omp:s1:t1"] };
@@ -95,7 +95,7 @@ it("bug: undoing A → B after B → C brought A back beside C; that undo is ref
   const change = async (n: number, to: string) => {
     const before = { "life.md": await file("life.md"), "closed.md": await file("closed.md") };
     const day = `2026-10-2${n}`;
-    const { texts: after } = applyEdits(before, { close: [{ file: "life.md", line: 3, reason: "moved", sources: [`correction:${n}`] }], add: [{ file: "life.md", section: "", text: to, sources: [`correction:${n}`], day }] }, { day, correction: true, budgets: {} });
+    const { texts: after } = applyEdits(before, { close: [{ file: "life.md", line: 3, reason: "moved", sources: [`correction:${n}`] }], add: [{ file: "life.md", section: "", text: to, sources: [`correction:${n}`], day }] }, { day, correction: true });
     for (const [name, text] of Object.entries(after)) await writeFile(`${CONTEXT}/${name}`, text);
     return (await commit(["life.md", "closed.md"], `correction ${n}: ${to}`, "omp"))!;
   };

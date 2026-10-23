@@ -1,7 +1,7 @@
 // now.md: what is in flight, rewritten whole every morning (05:30) and by `nbrain now`, never edited (format in
 // context/profile.ts). One block per repo with commits in the last week under NOW_ROOTS, per desk with fresh work under
 // NOW_DESKS, and Life. The material is read here; one model call says what each block is doing and what comes next, and
-// the code keeps the shape: ≤ 5 lines a block, ≤ 4 KB in all, oldest blocks dropped first.
+// the code keeps each block to 5 lines, as the brief shows a project's block whole.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -20,7 +20,6 @@ import { localTime } from "./time.js";
 const O = OWNER.name;
 const DAY = 86_400_000;
 const WEEK = 7 * DAY;
-const BUDGET = 4000;
 const BLOCK_LINES = 5;
 const run = promisify(execFile);
 
@@ -193,10 +192,7 @@ export async function buildNow(pool: Pool, now = new Date()): Promise<string> {
   const shown = blocks.filter(block => written.get(block.key)?.length);
   const work = shown.filter(block => block.key !== "life").sort((a, b) => b.last - a.last);
   const lifeBlock = shown.filter(block => block.key === "life");
-  const page = (kept: Material[]) => [`# Now · ${localTime(at).slice(0, 10)}`, ...[...kept, ...lifeBlock].map(render)].join("\n\n") + "\n";
-  // past the budget, the blocks touched longest ago go first
-  while (work.length && Buffer.byteLength(page(work)) > BUDGET) work.pop();
-  return page(work);
+  return [`# Now · ${localTime(at).slice(0, 10)}`, ...[...work, ...lifeBlock].map(render)].join("\n\n") + "\n";
 }
 
 /** Rewrite now.md and commit it as "now"; answers the commit id (undefined when nothing changed). */
