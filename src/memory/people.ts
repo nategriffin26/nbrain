@@ -1,7 +1,9 @@
 // Person pages: who someone is to the owner (relationship, other names, phones, emails, birthday), what memory knows
-// about them, their records, and the last threads with them (memory_person and context://people/{name}).
+// about them, their records, and the last threads with them (person and context://people/{name}).
 import type { Pool } from "pg";
 import { OWNER, ZONE } from "../config.js";
+import { visibleSql } from "./search.js";
+import { cleanText } from "./text.js";
 
 const FACTS = 6;
 const RECORDS = 5;
@@ -12,7 +14,7 @@ const SNIPPET_CHARS = 140;
 interface PersonRow { id: string; kind: string; name: string; aliases: string[]; handles: string[]; relationship: string | null; meta: { birthday?: { day: number; month: number } } }
 
 const day = (value: string) => new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: ZONE });
-const clip = (value: string, chars: number) => { const flat = value.replace(/\s+/g, " ").trim(); return flat.length > chars ? `${flat.slice(0, chars).trimEnd()}…` : flat; };
+const clip = (value: string, chars: number) => { const flat = cleanText(value).replace(/\s+/g, " ").trim(); return flat.length > chars ? `${flat.slice(0, chars).trimEnd()}…` : flat; };
 const money = (amount: string | null) => (amount === null ? "" : ` $${Number(amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
 /** Lowercased names and aliases only this person goes by: a record's org "James" belongs to neither of two Jameses. */
@@ -30,18 +32,18 @@ export async function personPage(pool: Pool, id: string): Promise<string | undef
   if (!person) return undefined;
   const [facts, records, recent] = await Promise.all([
     pool.query<{ id: string; at: string; body: string }>(
-      `SELECT i.id, i.at, i.body FROM memory.items i JOIN memory.item_people p ON p.item_id = i.id WHERE p.person_id = $1 AND i.source IN ('memory', 'note') ORDER BY i.at DESC LIMIT ${FACTS}`, [id]),
+      `SELECT i.id, i.at, i.body FROM memory.items i JOIN memory.item_people p ON p.item_id = i.id WHERE p.person_id = $1 AND i.source = 'note' AND ${visibleSql("i")} ORDER BY i.at DESC LIMIT ${FACTS}`, [id]),
     pool.query<{ id: string; at: string; type: string; org: string | null; title: string; amount: string | null; status: string | null; ref: string | null; due_at: string | null; start_at: string | null }>(
-      `SELECT r.id, r.at, r.type, r.org, r.title, r.amount, r.status, r.ref, r.due_at, r.start_at FROM memory.records r
-       WHERE r.superseded_by IS NULL AND r.type IN ('bill', 'payment', 'order', 'appointment') AND (r.people ? $1 OR lower(r.org) = ANY($2) OR EXISTS (SELECT 1 FROM memory.item_people p WHERE p.item_id = r.item_id AND p.person_id = $1 AND p.role = 'sender'))
+      `SELECT r.id, r.at, r.type, r.org, r.title, r.amount, r.status, r.ref, r.due_at, r.start_at FROM memory.records r JOIN memory.items i ON i.id = r.item_id
+       WHERE r.superseded_by IS NULL AND r.type IN ('bill', 'payment', 'order', 'appointment') AND (r.people ? $1 OR lower(r.org) = ANY($2)) AND ${visibleSql("i")}
        ORDER BY r.at DESC LIMIT ${RECORDS}`, [id, await ownNames(pool, person)]),
     // what they sent, and what the owner sent them
     pool.query<{ id: string; at: string; source: string; title: string; from_me: boolean; body: string }>(
       `SELECT i.id, i.at, i.source, i.title, i.from_me, left(i.body, 400) AS body
-       FROM memory.items i WHERE i.source IN ('imessage', 'gmail') AND EXISTS (SELECT 1 FROM memory.item_people p WHERE p.item_id = i.id AND p.person_id = $1 AND p.role = CASE WHEN i.from_me THEN 'recipient' ELSE 'sender' END)
+       FROM memory.items i WHERE i.source IN ('imessage', 'gmail') AND ${visibleSql("i")} AND (i.source <> 'imessage' OR i.sender !~ '^[0-9]{1,6}$' OR i.from_me) AND EXISTS (SELECT 1 FROM memory.item_people p WHERE p.item_id = i.id AND p.person_id = $1 AND p.role = CASE WHEN i.from_me THEN 'recipient' ELSE 'sender' END)
        ORDER BY i.at DESC LIMIT ${RECENT}`, [id]),
   ]);
-  const phones = person.handles.filter(handle => handle.startsWith("+"));
+  const phones = person.handles.filter(handle => /^\+\d{7,}$/.test(handle));
   const emails = person.handles.filter(handle => handle.includes("@"));
   const others = person.aliases.filter(alias => alias.toLowerCase() !== person.name.toLowerCase());
   const birthday = person.meta.birthday ? `${new Date(2000, person.meta.birthday.month - 1, person.meta.birthday.day).toLocaleDateString("en-US", { month: "long", day: "numeric" })}` : undefined;

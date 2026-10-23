@@ -1,7 +1,7 @@
 // The brain's one ingest process. Connectors read their sources into brain.events (Gmail, iMessage and Calendar through
 // Executor, X bookmarks through xurl; only those named in CONNECTORS run); memory_events indexes events into
-// memory.items/chunks; records and notes consolidation (and the profile refresh) follow. Each loop runs on its own
-// schedule and never overlaps itself; a failed run is logged and tried again at the next tick (connectors also record
+// memory.items/chunks; records, library cards, the curator, now.md and the Sunday message follow. Each loop runs on its
+// own schedule and never overlaps itself; a failed run is logged and tried again at the next tick (connectors also record
 // the failure on their brain.cursors row).
 import { readFile } from "node:fs/promises";
 import pg from "pg";
@@ -10,14 +10,16 @@ import { pollGmail } from "./connectors/gmail.js";
 import { pollMessages } from "./connectors/messages.js";
 import { pollOmp } from "./connectors/omp.js";
 import { pollX } from "./connectors/x.js";
-import { enrichCaptures } from "./capture/enrich.js";
+import { applyCorrections, nightly } from "./curator.js";
 import { evalWeekly } from "./eval/recall.js";
-import { gardenNightly } from "./garden.js";
+import { captureCards } from "./library/capture.js";
+import { triageCards } from "./library/cards.js";
 import { indexEvents } from "./memory/events.js";
-import { consolidate, refreshProfile } from "./memory/notes.js";
 import { extractRecords, prepareReader } from "./memory/records.js";
+import { writeNow } from "./now.js";
 import { indexSkills } from "./skills/indexer.js";
 import { slots } from "./time.js";
+import { weeklyTick } from "./weekly.js";
 
 const MINUTE = 60_000;
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 8 });
@@ -29,8 +31,9 @@ interface Loop { name: string; every: number; run: () => Promise<unknown> }
 
 /** X bookmarks cost per post read: twice a day (checked each minute, read once per slot). */
 const xDue = slots(["06:45", "17:45"]);
-/** The gardener writes yesterday's journal and context edits once a night, after the day's notes have settled. */
-const gardenDue = slots(["03:30"]);
+/** The curator reads the owner's words once a night; now.md is rewritten each morning before the day starts. */
+const curatorDue = slots(["03:30"]);
+const nowDue = slots(["05:30"]);
 const connectors = new Set((process.env.CONNECTORS ?? "").split(",").map(name => name.trim()).filter(Boolean));
 
 const LOOPS: Loop[] = [
@@ -44,12 +47,16 @@ const LOOPS: Loop[] = [
 LOOPS.push(
   { name: "memory_events", every: MINUTE, run: () => indexEvents(pool) },
   { name: "memory_records", every: MINUTE, run: () => extractRecords(pool, Date.now() + 4 * MINUTE) },
-  { name: "capture_enrich", every: MINUTE, run: () => enrichCaptures(pool) },
-  // notes from what was said since the last run (a conversation settles over minutes), then the profile if they changed
-  { name: "memory_notes", every: 5 * MINUTE, run: async () => { if (await consolidate(pool)) await refreshProfile(pool); } },
-  { name: "garden", every: MINUTE, run: async () => { if (gardenDue()) await gardenNightly(pool); } },
-  // the retrieval eval, early Sunday (or the first morning after a missed week); the score lands in the journal
+  // a library card for each new bookmark and save (one model call each), then a screenshot for each design reference
+  { name: "library_triage", every: MINUTE, run: () => triageCards(pool, Date.now() + 4 * MINUTE) },
+  { name: "library_capture", every: 5 * MINUTE, run: () => captureCards(pool, Date.now() + 4 * MINUTE) },
+  // corrections land within a minute: the next brief carries them
+  { name: "curator_corrections", every: MINUTE, run: () => applyCorrections(pool) },
+  { name: "curator_nightly", every: MINUTE, run: async () => { if (curatorDue()) await nightly(pool); } },
+  { name: "now", every: MINUTE, run: async () => { if (nowDue()) await writeNow(pool); } },
+  // the retrieval eval, early Sunday (or the first morning after a missed week), before the Sunday message reads its score
   { name: "eval", every: 10 * MINUTE, run: () => evalWeekly(pool) },
+  { name: "weekly", every: 10 * MINUTE, run: () => weeklyTick(pool) },
   // skills and styles saved in the context repo (or edited by hand), searchable within a minute
   { name: "memory_skills", every: MINUTE, run: () => indexSkills(pool) },
 );

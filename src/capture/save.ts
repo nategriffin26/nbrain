@@ -1,5 +1,7 @@
-// `save`: keep a page, PDF, video, post, note or file in the brain as a `capture` event (memory.items source `saved` within
-// a minute, via memory/events.ts), with a snapshot of what was fetched beside it. Enrichment (enrich.ts) follows.
+// `save`: keep a page, PDF, video, post, note or file in the brain as a `capture` event (memory.items source `saved`
+// within a minute, via memory/events.ts), with a snapshot of what was fetched beside it. The library triage
+// (library/cards.ts) then summarizes and tags it and, when it is worth keeping, cards it. Saved `--as research` (a
+// research synthesis), it becomes source `research`: searchable, never carded.
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Pool } from "pg";
@@ -7,13 +9,14 @@ import * as z from "zod";
 import { BRAIN_HOME, OWNER } from "../config.js";
 import { MCP_TOOLS } from "../mcp/contract.js";
 import { type Call, ScopeError, type Tool } from "../mcp/types.js";
-import { savedId } from "./id.js";
+import { researchId, savedId } from "./id.js";
 import { type Captured, readFileAt, readText, readUrl } from "./read.js";
 
 /** Pages are gone within years; a snapshot over this is not kept (the text still is). */
 const SNAPSHOT_MAX = 25 * 1024 * 1024;
 
-export interface SaveInput { url?: string; text?: string; title?: string; why?: string; file?: string }
+/** `project`: the project it is for (the card's first project). `as`: "research" from the CLI only. */
+export interface SaveInput { url?: string; text?: string; title?: string; why?: string; file?: string; project?: string; as?: "research" }
 /** Who saves and through which pools: the MCP call's, or the CLI's (one pool, signed as the owner). */
 export interface Saver { reader: Pool; writer: Pool; signer: string; via: string; local: boolean }
 
@@ -24,20 +27,21 @@ export async function save(who: Saver, input: SaveInput) {
   if (given !== 1) throw new Error("Give exactly one of url, text or file.");
   if (input.file !== undefined && !who.local) throw new ScopeError("file reads a path on this machine; only a local caller may use it. Send the text instead.");
   const why = input.why?.replace(/\s+/g, " ").trim().slice(0, 500) ?? "";
+  const project = input.project?.trim();
   const read: Captured = input.url ? await readUrl(input.url) : input.file ? await readFileAt(input.file, input.title) : readText(input.text!, input.title);
   if (read.body.trim() === "") throw new Error("Nothing readable was found to keep.");
   const title = (input.url && input.title?.trim()) || read.title;
-  const id = savedId(read.external_id);
+  const id = input.as === "research" ? researchId(read.external_id) : savedId(read.external_id);
   const now = new Date();
 
   let snapshot: string | undefined;
   if (read.snapshot !== undefined && read.snapshot.bytes.length <= SNAPSHOT_MAX) {
-    snapshot = join("captures", String(now.getUTCFullYear()), `${id.slice("saved:".length)}.${read.snapshot.ext}`);
+    snapshot = join("captures", String(now.getUTCFullYear()), `${id.slice(id.indexOf(":") + 1)}.${read.snapshot.ext}`);
     await mkdir(dirname(join(BRAIN_HOME, snapshot)), { recursive: true });
     // an earlier snapshot of the same thing stays
     await writeFile(join(BRAIN_HOME, snapshot), read.snapshot.bytes, { flag: "wx" }).catch(error => { if ((error as { code?: string }).code !== "EEXIST") throw error; });
   }
-  const data = { why, by: who.signer, via: who.via, form: read.form, reader: read.reader, ...(read.site ? { site: read.site } : {}), ...(read.author ? { author: read.author } : {}), ...(read.published ? { published: read.published } : {}), ...(snapshot ? { snapshot } : {}), ...(read.original_url ? { original_url: read.original_url } : {}) };
+  const data = { why, by: who.signer, via: who.via, form: read.form, reader: read.reader, ...(project ? { project } : {}), ...(input.as ? { as: input.as } : {}), ...(read.site ? { site: read.site } : {}), ...(read.author ? { author: read.author } : {}), ...(read.published ? { published: read.published } : {}), ...(snapshot ? { snapshot } : {}), ...(read.original_url ? { original_url: read.original_url } : {}) };
   const body = read.body.replace(/\0/g, "");
   // memory_writer may only INSERT: no RETURNING, and a conflict target would need SELECT; the row count says whether it was new
   const { rowCount } = await who.writer.query(
@@ -47,7 +51,7 @@ export async function save(who: Saver, input: SaveInput) {
     const { rows } = await who.reader.query<{ at: Date; title: string }>("SELECT at, title FROM memory.items WHERE id = $1", [id]);
     return { already: true, id, title: rows[0]?.title ?? title, saved_at: rows[0]?.at.toISOString() ?? null, note: rows[0] === undefined ? "Already saved; still being indexed." : "Already saved." };
   }
-  return { id, title, words: words(body), preview: body.replace(/\s+/g, " ").slice(0, 300), already: false, note: "Searchable within about a minute; summarized and tagged within a few more." };
+  return { id, title, words: words(body), preview: body.replace(/\s+/g, " ").slice(0, 300), already: false, note: input.as === "research" ? "Searchable within about a minute." : "Searchable within about a minute; summarized, tagged and, when worth keeping, a library card within a few more." };
 }
 
 export const captureTools: Record<string, Tool> = {
@@ -59,16 +63,18 @@ export const captureTools: Record<string, Tool> = {
   },
 };
 
-/** `capture save <url | -> [--why …] [--title …]`: from the shell, signed as the owner; `-` reads the text from stdin. */
+/** `capture save <url | -> [--why …] [--title …] [--project …] [--as research]`: from the shell, signed as the owner; `-` reads the text from stdin. */
 export async function captureCommand(args: string[]): Promise<void> {
   const [verb, target, ...rest] = args;
   const flag = (name: string) => { const at = rest.indexOf(`--${name}`); return at < 0 ? undefined : rest[at + 1]; };
-  if (verb !== "save" || !target) throw new Error('usage: capture save <url | -> [--why "…"] [--title "…"]   (- reads the text from stdin)');
+  const usage = 'usage: capture save <url | -> [--why "…"] [--title "…"] [--project <name>] [--as research]   (- reads the text from stdin)';
+  if (verb !== "save" || !target) throw new Error(usage);
+  if (flag("as") !== undefined && flag("as") !== "research") throw new Error(`--as takes only research. ${usage}`);
   const { default: pg } = await import("pg");
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   try {
     const text = target === "-" ? await new Response(process.stdin as unknown as ReadableStream).text() : undefined;
-    const answer = await save({ reader: pool, writer: pool, signer: OWNER.name, via: "cli", local: true }, { ...(text === undefined ? { url: target } : { text }), ...(flag("title") ? { title: flag("title") } : {}), ...(flag("why") ? { why: flag("why") } : {}) });
+    const answer = await save({ reader: pool, writer: pool, signer: OWNER.name, via: "cli", local: true }, { ...(text === undefined ? { url: target } : { text }), ...(flag("title") ? { title: flag("title") } : {}), ...(flag("why") ? { why: flag("why") } : {}), ...(flag("project") ? { project: flag("project") } : {}), ...(flag("as") ? { as: "research" as const } : {}) });
     console.log(JSON.stringify(answer, null, 2));
   } finally { await pool.end(); }
 }

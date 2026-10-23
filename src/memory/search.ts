@@ -13,16 +13,21 @@
 // item where the most query words meet.
 // read: one item (or `<item>#<part>`) in pages of 8 KB, with the neighbouring messages of its thread.
 import type { Pool, PoolClient } from "pg";
-import { OWNER, ZONE } from "../config.js";
+import { ASSISTANT, OWNER, ZONE } from "../config.js";
 import { embed } from "./store.js";
-import { type DateMention, dateMention, fold, foldHandle, quoteOf, queryWords } from "./text.js";
+import { cleanText, type DateMention, dateMention, fold, foldHandle, quoteOf, queryWords } from "./text.js";
 
-/** `rerank: false` skips the cross-encoder (it costs ~0.7 s and moved one question in 172); memory_search keeps it.
- *  `trace` returns each stage's items (the eval, src/eval/recall.ts, says where a miss was lost). */
-export interface SearchInput { query: string; person?: string; source?: string[]; from?: string; to?: string; limit?: number; rerank?: boolean; trace?: boolean }
-/** `record`: what a record read from the item (type, when, status, ref), which search found it by. */
-export interface Hit { id: string; chunk: string; title: string; date: string; who: string; source: string; kind: string; url?: string; context?: string; record?: string; quote: string; why: string }
-export interface SearchResult { hits: Hit[]; person?: { id: string; name: string }[]; people?: { id: string; name: string }[]; date?: string; ms: number; channels: Record<string, number>; trace?: { channels: Record<string, string[]>; fused: string[] } }
+/** `rerank: false` skips the cross-encoder (it costs ~0.7 s and moved one question in 172); search keeps it.
+ *  `trace` returns each stage's items (the eval, src/eval/recall.ts, says where a miss was lost). `private` lets in what
+ *  the owner marked private (memory.private), left out otherwise. `cards`: only items with a library card that matches
+ *  (memory.cards; project matches any of the card's projects). */
+export interface SearchInput { query: string; person?: string; source?: string[]; from?: string; to?: string; limit?: number; rerank?: boolean; trace?: boolean; private?: boolean; cards?: { kind?: string; status?: string; project?: string } }
+/** `record`: what a record read from the item (type, when, status, ref), which search found it by. `strength`: strong when
+ *  it answers the query (calibrated on the recall eval), weak when it only shares words or meaning. `more`: look-alikes
+ *  folded into it (one order's mails, one thread's messages). */
+export interface Result { id: string; chunk: string; title: string; url?: string; date: string; who: string; source: string; kind: string; context?: string; record?: string; quote: string; strength: "strong" | "weak"; more?: number; why: string }
+/** `results` (with id, title, url) is also the shape ChatGPT's deep research reads. `nothing_strong`: no result is strong. */
+export interface SearchResult { results: Result[]; nothing_strong?: true; person?: { id: string; name: string; close?: true }[]; people?: { id: string; name: string }[]; date?: string; ms: number; channels: Record<string, number>; trace?: { channels: Record<string, string[]>; fused: string[] } }
 
 const RRF_K = 60;
 const CHANNEL_TOP = 100;
@@ -55,6 +60,56 @@ class Sql {
   add(value: unknown): string { this.params.push(value); return `$${this.params.length}`; }
 }
 
+/** Apply this to every path that can expose an item, including conversation neighbours and record provenance. */
+export function visibleSql(alias: string): string {
+  return `NOT EXISTS (SELECT 1 FROM memory.private v WHERE v.target = ${alias}.id OR v.target = 'thread:' || ${alias}.source || ':' || ${alias}.thread)
+    AND (${alias}.source <> 'record' OR NOT EXISTS (SELECT 1 FROM memory.items s JOIN memory.private v ON v.target = s.id OR v.target = 'thread:' || s.source || ':' || s.thread WHERE s.id = coalesce(${alias}.meta->>'item', ${alias}.meta->'sources'->0->>'item')))`;
+}
+
+/** Superseded typed records remain fetchable history, not current search or changes results. */
+export function currentSql(alias: string): string {
+  return `NOT EXISTS (SELECT 1 FROM memory.records r WHERE r.id = ${alias}.id AND r.superseded_by IS NOT NULL)`;
+}
+
+/** A business shortcode cannot identify a person, even when an old import attached it to their phone. */
+export function personSql(alias: string, ids: string): string {
+  return `EXISTS (SELECT 1 FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = ${alias}.id AND r.person_id = ANY(${ids}) AND NOT (r.role = 'sender' AND p.kind = 'person' AND ${alias}.source = 'imessage' AND ${alias}.sender ~ '^[0-9]{1,6}$'))`;
+}
+
+export function foldKey(row: { item_id: string; source: string; thread: string | null; same_as: string | null; org: string | null; ref: string | null }): string {
+  if (row.same_as) return `record:${fold(row.same_as)}`;
+  if (row.org && row.ref) return `record:${fold(row.org).trim()}|${fold(row.ref).trim()}`;
+  return row.source === "gmail" && row.thread ? `gmail:${row.thread}` : row.item_id;
+}
+
+/** Imported mail can be only a preheader, with no order number. Fold matching delivery notices, not two known orders. */
+export function sameOrder(a: { source: string; title: string; org: string | null; ref: string | null; at: Date }, b: typeof a): boolean {
+  if (!a.org || !b.org) return false;
+  const merchant = (org: string) => fold(org).trim().replace(/\.com$/, "");
+  if (merchant(a.org) !== merchant(b.org)) return false;
+  if (a.ref && b.ref) return fold(a.ref) === fold(b.ref);
+  if (a.source !== "gmail" || b.source !== "gmail" || Math.abs(a.at.getTime() - b.at.getTime()) > 14 * 86_400_000) return false;
+  const product = (title: string) => /^(?:ordered|shipped|out for delivery|delivered|delivery update):\s*(.+)$/i.exec(title)?.[1]?.replace(/&quot;/g, '"').replace(/["“”]/g, "").trim().toLowerCase();
+  const left = product(a.title);
+  return !!left && left === product(b.title);
+}
+
+export function strengthOf(score: number | undefined, inRange: boolean, exact: boolean, covered = true, threshold = 0.8, margin = 0, partial = false): Result["strength"] {
+  if (!inRange) return "weak";
+  if (score === undefined) return covered && exact ? "strong" : "weak";
+  return (covered && (score >= threshold || (exact && score >= 0.1) || (score >= 0.5 && margin >= 0.1))) || (partial && score >= Math.max(threshold, 0.99)) ? "strong" : "weak";
+}
+
+export function containsTerm(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "iu").test(text);
+}
+
+
+function withoutCodes(alias: string): string {
+  return `NOT (${alias}.source IN ('gmail', 'imessage') AND (${alias}.title || ' ' || left(${alias}.body, 1000)) ~* '(verification|security|authentication|one.time|login|sign.in)[ -]*(code|pin)|code (is|for your)|[0-9]{4,8} is your')`;
+}
+
 /** Day bound of a from/to filter: a bare date is a whole local day (`to` inclusive). */
 function bound(value: string, end: boolean): Date {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? new Date(`${value.trim()}T00:00:00`) : new Date(value);
@@ -63,12 +118,13 @@ function bound(value: string, end: boolean): Date {
 }
 
 /** `former`: ids of person rows merged into this one (meta.formerIds), so a lookup by an old id still lands here. */
-interface Person { id: string; name: string; aliases: string[]; handles: string[]; kind: string; relationship: string | null; former: string[] }
-let peopleCache: { at: number; people: Person[] } | undefined;
+interface Person { id: string; name: string; aliases: string[]; handles: string[]; kind: string; relationship: string | null; former: string[]; close?: true }
+const peopleCache = new WeakMap<Pool, { at: number; people: Person[] }>();
 async function allPeople(pool: Pool): Promise<Person[]> {
-  if (peopleCache && Date.now() - peopleCache.at < 60_000) return peopleCache.people;
+  const cached = peopleCache.get(pool);
+  if (cached && Date.now() - cached.at < 60_000) return cached.people;
   const { rows } = await pool.query<Person>("SELECT id, name, aliases, handles, kind, relationship, coalesce(meta->'formerIds', '[]') AS former FROM memory.people WHERE kind <> 'self'");
-  peopleCache = { at: Date.now(), people: rows };
+  peopleCache.set(pool, { at: Date.now(), people: rows });
   return rows;
 }
 
@@ -76,10 +132,20 @@ export async function resolvePerson(pool: Pool, name: string): Promise<Person[]>
   const wanted = fold(name.trim()).replace(/^my\s+/, "");
   const handle = foldHandle(name);
   const people = await allPeople(pool);
-  const exact = people.filter(each => each.id === name.trim() || each.former.includes(name.trim()) || fold(each.name) === wanted || each.aliases.some(alias => fold(alias) === wanted) || each.handles.includes(handle));
+  const exact = people.filter(each => each.id === name.trim() || each.former.includes(name.trim()) || fold(each.name) === wanted || each.aliases.some(alias => fold(alias) === wanted) || (each.handles.includes(handle) && !(each.kind === "person" && /^\+?\d{1,6}$/.test(handle))));
   if (exact.length > 0) return exact;
   const words = wanted.split(/\s+/).filter(word => word.length > 1);
-  return people.filter(each => words.length > 0 && words.every(word => [each.name, ...each.aliases].some(known => fold(known).split(/\s+/).includes(word)))).slice(0, 10);
+  const partial = people.filter(each => words.length > 0 && words.every(word => [each.name, ...each.aliases].some(known => fold(known).split(/\s+/).includes(word)))).slice(0, 10);
+  if (partial.length) return partial;
+  const grams = (text: string) => {
+    const name = ` ${fold(text).replace(/\s+/g, "")} `;
+    return new Set(Array.from({ length: Math.max(0, name.length - 2) }, (_, i) => name.slice(i, i + 3)));
+  };
+  const wantedGrams = grams(wanted);
+  return people.map(each => ({ each, score: Math.max(...[each.name, ...each.aliases].map(name => {
+    const known = grams(name);
+    return 2 * [...wantedGrams].filter(gram => known.has(gram)).length / (wantedGrams.size + known.size || 1);
+  })) })).filter(hit => hit.score >= 0.3).sort((a, b) => b.score - a.score).slice(0, 3).map(({ each }) => ({ ...each, close: true }));
 }
 
 /** People the query names: a full name or alias as whole words; a one-word name only capitalised or after "my". */
@@ -142,6 +208,15 @@ function inDates(date: DateMention, sql: Sql): string {
   return ` AND (${ranges.join(" OR ")} OR (${near} AND c.id IN (SELECT c.id FROM memory.chunks c WHERE ${named.join(" OR ")})))`;
 }
 
+/** Match the date channel against the visible conversation, not only the message's send time. */
+export function matchesDate(date: DateMention | undefined, at: Date, text: string): boolean {
+  if (!date || date.ranges.some(([from, to]) => at >= from && at < to)) return true;
+  const year = 365 * 86_400_000;
+  if (at.getTime() < Math.min(...date.ranges.map(([from]) => from.getTime())) - year || at.getTime() >= Math.max(...date.ranges.map(([, to]) => to.getTime())) + year) return false;
+  const body = fold(text).replace(/\s+/g, " ");
+  return date.phrases.slice(0, 16).some(phrase => new RegExp(`\\b${phrase}(?:st|nd|rd|th)?\\b`, "i").test(body));
+}
+
 /** Records among `items`, each with the item it was read from and that item's first chunk. */
 async function recordSources(pool: Pool, items: string[]): Promise<Map<string, Ranked>> {
   const { rows } = await pool.query<{ record: string; item: string; chunk: string }>(
@@ -162,12 +237,22 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   const started = Date.now();
   const limit = Math.min(30, Math.max(1, Math.round(input.limit ?? 10)));
   const sql = new Sql();
-  const clauses = ["true"];
+  const clauses = ["i.source <> 'memory'", currentSql("i")];
+  if (!input.private) clauses.push(visibleSql("i"));
+  const includeCodes = /\b(codes?|otp|one[- ]time|password|passcode|2fa|verification|authenticate|\d{4,8})\b/i.test(input.query);
+  if (!includeCodes) clauses.push(withoutCodes("i"));
+  if (input.cards) {
+    const card = ["card.item_id = i.id"];
+    if (input.cards.kind) card.push(`card.kind = ${sql.add(input.cards.kind)}`);
+    if (input.cards.status) card.push(`card.status = ${sql.add(input.cards.status)}`);
+    if (input.cards.project) card.push(`EXISTS (SELECT 1 FROM unnest(card.projects) project WHERE strpos(lower(project), lower(${sql.add(input.cards.project)})) > 0)`);
+    clauses.push(`EXISTS (SELECT 1 FROM memory.cards card WHERE ${card.join(" AND ")})`);
+  }
   let person: Person[] | undefined;
   if (input.person?.trim()) {
     person = await resolvePerson(pool, input.person);
-    if (person.length === 0) return { hits: [], person: [], ms: Date.now() - started, channels: {} };
-    clauses.push(`EXISTS (SELECT 1 FROM memory.item_people r WHERE r.item_id = i.id AND r.person_id = ANY(${sql.add(person.map(each => each.id))}))`);
+    if (person.length === 0) return { results: [], nothing_strong: true, person: [], ms: Date.now() - started, channels: {} };
+    clauses.push(personSql("i", sql.add(person.map(each => each.id))));
   }
   if (input.source?.length) clauses.push(`i.source = ANY(${sql.add(input.source)})`);
   if (input.from) clauses.push(`i.at >= ${sql.add(bound(input.from, false))}`);
@@ -175,7 +260,8 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   const where = clauses.join(" AND ");
 
   const date = dateMention(input.query, now);
-  const words = queryWords(date ? date.spans.reduce((rest, span) => rest.replace(span, " "), input.query) : input.query);
+  const queryTerms = queryWords(input.query);
+  const words = date ? queryWords(date.spans.reduce((rest, span) => rest.replace(span, " "), input.query)) : queryTerms;
   const named = person ? [] : await peopleNamed(pool, input.query);
   const sources = input.source?.length ? [] : SOURCE_WORDS.filter(([pattern]) => pattern.test(input.query)).flatMap(([, list]) => list);
   const scoped = (extra: (local: Sql) => string, newest = false) => {
@@ -197,11 +283,11 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   // each filter the query resolves is a channel of its own; two or more also make one channel of the items that meet them all
   const filters: [string, (local: Sql) => string][] = [];
   if (date) filters.push(["date", local => inDates(date, local)]);
-  if (named.length > 0) filters.push(["person", local => ` AND EXISTS (SELECT 1 FROM memory.item_people r WHERE r.item_id = i.id AND r.person_id = ANY(${local.add(named.map(each => each.id))}))`]);
+  if (named.length > 0) filters.push(["person", local => ` AND ${personSql("i", local.add(named.map(each => each.id)))}`]);
   if (sources.length > 0) filters.push(["source", local => ` AND i.source = ANY(${local.add(sources)})`]);
   for (const [name, condition] of filters) pending.push([name, scoped(condition)]);
   if (filters.length > 1) pending.push(["combined", scoped(local => filters.map(([, condition]) => condition(local)).join(""))]);
-  // "the latest Babylist email": the best word matches, newest first
+  // "the latest Acme email": the best word matches, newest first
   if (RECENCY.test(input.query) && words.length > 0) pending.push(["recent", scoped(local => filters.find(([name]) => name === "source")?.[1](local) ?? "", true)]);
   // an order number, booking code or phone the query names: what holds it exactly
   const codes = words.filter(word => word.length >= 5 && /\d/.test(word));
@@ -228,7 +314,9 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   // an id the query names exactly is the first hit
   const tokens = input.query.split(/\s+/).map(each => each.replace(/^[("'“‘]+|[)"'”’.,;:!?]+$/g, "")).filter(each => /^(?:[\w.-]+:\S+|[a-z]-[\w-]{3,})$/.test(each));
   if (tokens.length > 0) {
-    const { rows } = await pool.query<{ id: string; item_id: string }>("SELECT DISTINCT ON (item_id) id, item_id FROM memory.chunks WHERE item_id = ANY($1) ORDER BY item_id, part", [tokens]);
+    const local = new Sql();
+    local.params.push(...sql.params);
+    const { rows } = await pool.query<{ id: string; item_id: string }>(`SELECT DISTINCT ON (c.item_id) c.id, c.item_id FROM memory.chunks c JOIN memory.items i ON i.id = c.item_id WHERE ${where} AND c.item_id = ANY(${local.add(tokens)}) ORDER BY c.item_id, c.part`, local.params);
     order = [...ranked(rows), ...order.filter(each => !rows.some(row => row.item_id === each.item))];
   }
 
@@ -236,74 +324,109 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   // the reranked head, and room for the texts a conversation already shows
   const details = await hitRows(pool, order.slice(0, Math.max(RERANK_TOP, limit * 2)).map(each => each.id));
   const head = order.slice(0, RERANK_TOP);
-  if (input.rerank !== false && process.env.RERANK_URL && head.length > 1) {
-    const docs = head.map(each => {
-      const row = details.get(each.id)!;
-      return `${row.title} · ${row.who} · ${row.at.toISOString().slice(0, 10)}\n${row.context.slice(0, 160)}\n${quoteOf(row.text, words, 300)}`.slice(0, RERANK_CHARS).toWellFormed();
-    });
-    // a reranker that is down or failing leaves the fused order: search answers without it, and says so in the log
-    const scores = await rerank(input.query, docs).catch((error: unknown) => { console.warn(`${new Date().toISOString()} reranker: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
-    if (scores) {
-      const reordered = head.map((each, index) => ({ each, prior: index + 1, score: scores.get(index) ?? 0 })).sort((a, b) => b.score - a.score)
-        .map((entry, rank) => ({ ...entry, fused: RERANK_PRIOR / (RRF_K + entry.prior) + 1 / (RRF_K + rank + 1) }))
-        .sort((a, b) => b.fused - a.fused || a.prior - b.prior);
-      order = [...reordered.map(entry => entry.each), ...order.slice(RERANK_TOP)];
-    }
+  const rows = [...details.values()];
+  const records = rows.flatMap(row => best.get(row.item_id)?.record ?? []);
+  const [talk, bodies] = await Promise.all([
+    conversations(pool, rows.filter(row => row.thread !== null && (row.source === "imessage" || row.source === "chat" && row.origin === "context")).map(row => row.item_id), input.private, includeCodes),
+    pool.query<{ id: string; body: string }>("SELECT id, body FROM memory.items WHERE id = ANY($1) AND NOT (source = 'imessage' AND thread IS NOT NULL)", [[...rows.map(row => row.item_id), ...records]]),
+  ]);
+  const body = new Map(bodies.rows.map(row => [row.id, row.body]));
+  const ownerWords = new Set(queryWords(`${OWNER.name} ${OWNER.fullName}`));
+  const contentWords = words.filter(word => !ownerWords.has(word) && !SOURCE_WORDS.some(([pattern]) => pattern.test(word)));
+  const firstWord = input.query.match(/[\p{L}][\p{L}\p{N}'’_.@+-]*/u)?.[0];
+  const knownNames = new Set([ASSISTANT, ...[...(person ?? []), ...named].flatMap(each => [each.name, ...each.aliases])].flatMap(queryWords));
+  const names = new Set(queryWords((input.query.match(/\b(?:\p{Lu}[\p{L}\p{N}'’_.@+-]*|[\p{L}]+\d[\p{L}\p{N}_.-]*)\b/gu) ?? [])
+    .filter(word => word !== firstWord || knownNames.has(queryWords(word)[0] ?? "") || /[a-z][A-Z]|\d|^[A-Z]{2,}$/.test(word)).join(" ")));
+  const temporal = /^(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|dst|am|pm|central)$/i;
+  const anchors = contentWords.filter(word => names.has(word) && !(date && temporal.test(word)));
+  const relevance = new Map<number, number>();
+  const scores = input.rerank !== false && process.env.RERANK_URL && head.length > 1 ? await rerank(input.query, head.map(each => {
+    const row = details.get(each.id)!;
+    const evidence = talk.get(row.item_id)?.map(line => `${line.who}: ${line.body}`).join("\n") ?? body.get(row.item_id) ?? row.text;
+    return `${row.title} · ${row.who} · ${row.at.toISOString().slice(0, 10)}\n${row.context.slice(0, 160)}\n${quoteOf(evidence, queryTerms, 300, row.start_at)}`.slice(0, RERANK_CHARS).toWellFormed();
+  })).catch((error: unknown) => { console.warn(`${new Date().toISOString()} reranker: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined;
+  if (scores) {
+    for (const [index, score] of scores) if (head[index]) relevance.set(head[index]!.id, score);
+    const reordered = head.map((each, index) => ({ each, prior: index + 1, score: scores.get(index) ?? 0 })).sort((a, b) => b.score - a.score)
+      .map((entry, rank) => ({ ...entry, fused: RERANK_PRIOR / (RRF_K + entry.prior) + 1 / (RRF_K + rank + 1) }))
+      .sort((a, b) => b.fused - a.fused || a.prior - b.prior);
+    order = [...reordered.map(entry => entry.each), ...order.slice(RERANK_TOP)];
   }
 
   const sets = Object.fromEntries(Object.entries(channels).map(([name, list]) => [name, new Set(list.map(each => standsFor.get(each.item)?.item ?? each.item))]));
+  const inRange = (row: HitRow, text: string) => matchesDate(date, row.at, text) && (!input.from || row.at >= bound(input.from, false)) && (!input.to || row.at < bound(input.to, true));
   const candidates = order.filter(each => details.has(each.id)).map(each => details.get(each.id)!);
-  const records = candidates.slice(0, limit * 2).flatMap(row => best.get(row.item_id)?.record ?? []);
-  const [talk, bodies] = await Promise.all([
-    conversations(pool, candidates.filter(row => row.source === "imessage" && row.thread !== null).map(row => row.item_id)),
-    pool.query<{ id: string; body: string }>("SELECT id, body FROM memory.items WHERE id = ANY($1) AND NOT (source = 'imessage' AND thread IS NOT NULL)", [[...candidates.slice(0, limit * 2).map(row => row.item_id), ...records]]),
-  ]);
-  const body = new Map(bodies.rows.map(row => [row.id, row.body]));
-  // a text near a conversation already picked joins it, and the messages between them are filled in below
-  const entries: { row: HitRow; lines?: Line[]; joined: boolean }[] = [];
-  const shown = new Set<string>();
+  const strengths = new Map<number, Result["strength"]>();
+  const scoreOrder = [...relevance.values()].sort((a, b) => b - a);
   for (const row of candidates) {
-    if (entries.length === limit) break;
-    if (shown.has(row.item_id)) continue;
+    const text = fold(`${row.title} ${row.who} ${row.context} ${body.get(row.item_id) ?? row.text} ${(talk.get(row.item_id) ?? []).map(line => line.body).join(" ")}`);
+    const contains = (word: string) => containsTerm(text, word) || [...(person ?? []), ...named].some(each => queryWords([each.name, ...each.aliases, each.relationship ?? ""].join(" ")).includes(word) && fold(row.who).includes(fold(each.name)));
+    const missing = anchors.filter(word => !contains(word));
+    const covered = missing.length === 0;
+    const partial = anchors.length > 1 && missing.length === 1 && missing[0]!.length > 1 && !/\d/.test(missing[0]!);
+    const exact = tokens.includes(row.item_id) || (contentWords.length > 0 && contentWords.every(contains));
+    const score = relevance.get(row.id);
+    const margin = score !== undefined && score === scoreOrder[0] ? score - (scoreOrder[1] ?? 0) : 0;
+    // Unstructured mail may be an advertisement for the right thing, not evidence that the owner bought it.
+    const threshold = row.source === "gmail" ? 0.99 : anchors.length ? 0.8 : 0.95;
+    strengths.set(row.id, strengthOf(score, inRange(row, text), exact, covered, threshold, margin, partial));
+  }
+  const strong = (row: HitRow) => strengths.get(row.id)!;
+  candidates.sort((a, b) => Number(strong(b) === "strong") - Number(strong(a) === "strong"));
+  // a text near a conversation already picked joins it, and the messages between them are filled in below
+  const entries: { row: HitRow; lines?: Line[]; joined: boolean; more: number }[] = [];
+  const shown = new Map<string, typeof entries[number]>();
+  const folded = new Map<string, typeof entries[number]>();
+  for (const row of candidates) {
+    const duplicate = shown.get(row.item_id) ?? folded.get(foldKey(row)) ?? entries.find(entry => sameOrder(entry.row, row));
+    if (duplicate) { duplicate.more++; continue; }
     const lines = talk.get(row.item_id);
-    for (const line of lines ?? []) shown.add(line.id);
-    const near = lines && entries.find(entry => entry.lines && entry.row.thread === row.thread
+    if (entries.length === limit) continue;
+    const near = lines && entries.find(entry => entry.lines && entry.row.source === row.source && entry.row.thread === row.thread
       && lines[0]!.at.getTime() - entry.lines.at(-1)!.at.getTime() <= JOIN_MS && entry.lines[0]!.at.getTime() - lines.at(-1)!.at.getTime() <= JOIN_MS);
     if (near) {
       near.lines = [...new Map([...near.lines!, ...lines].map(line => [line.id, line])).values()].sort((a, b) => a.at.getTime() - b.at.getTime());
       near.joined = true;
-    } else entries.push({ row, ...(lines ? { lines } : {}), joined: false });
+      near.more++;
+      for (const line of lines) shown.set(line.id, near);
+    } else {
+      const entry = { row, ...(lines ? { lines } : {}), joined: false, more: 0 };
+      entries.push(entry);
+      folded.set(foldKey(row), entry);
+      for (const line of lines ?? []) shown.set(line.id, entry);
+    }
   }
   await Promise.all(entries.filter(entry => entry.joined).map(async entry => {
-    const between = await span(pool, entry.row, entry.lines![0]!.at, entry.lines!.at(-1)!.at);
+    const between = await span(pool, entry.row, entry.lines![0]!.at, entry.lines!.at(-1)!.at, input.private, includeCodes);
     if (between.length <= JOINED_LINES) entry.lines = between;
   }));
-  const hits = entries.map(({ row, lines }): Hit => {
+  const results = entries.map(({ row, lines, more }): Result => {
     const text = body.get(row.item_id) ?? row.text;
     const record = body.get(best.get(row.item_id)?.record ?? "");
     return {
       id: row.item_id, chunk: `${row.item_id}#${row.part}`, title: row.title, date: row.at.toISOString(), who: row.who, source: row.source, kind: row.kind,
+      strength: strong(row), ...(more ? { more } : {}),
       ...(row.url ? { url: row.url } : {}), ...(row.context ? { context: row.context } : {}), ...(record ? { record: recordLine(record) } : {}),
       quote: lines ? renderTalk(lines, row, words) : quoteOf(text === "" ? row.title : text, words, QUOTE_CHARS, body.has(row.item_id) ? row.start_at : 0),
       why: Object.keys(sets).filter(name => sets[name]!.has(row.item_id)).join(" · "),
     };
   });
   return {
-    hits, ...(person ? { person: person.map(({ id, name }) => ({ id, name })) } : {}), ...(named.length ? { people: named.map(({ id, name }) => ({ id, name })) } : {}),
+    results, ...(!results.some(row => row.strength === "strong") ? { nothing_strong: true as const } : {}), ...(person ? { person: person.map(({ id, name, close }) => ({ id, name, ...(close ? { close } : {}) })) } : {}), ...(named.length ? { people: named.map(({ id, name }) => ({ id, name })) } : {}),
     ...(date ? { date: date.label } : {}), ms: Date.now() - started, channels: Object.fromEntries(Object.entries(channels).map(([name, list]) => [name, list.length])),
     ...(input.trace ? { trace: { channels: Object.fromEntries(Object.entries(channels).map(([name, list]) => [name, [...new Set(list.map(each => each.item))]])), fused: fusedOrder } } : {}),
   };
 }
 
-interface HitRow { id: number; item_id: string; part: number; start_at: number; text: string; context: string; title: string; at: Date; who: string; source: string; kind: string; url: string | null; thread: string | null }
+interface HitRow { id: number; item_id: string; part: number; start_at: number; text: string; context: string; title: string; at: Date; who: string; source: string; kind: string; origin: string; url: string | null; thread: string | null; same_as: string | null; org: string | null; ref: string | null }
 
-/** The chunks' text and their items' title, date and who: "<owner> to Sam", "Huntington Alerts", "@karpathy". */
+/** The chunks' text and their items' title, date and who: "<owner> to Sam", "Bank Alerts", "@example". */
 async function hitRows(pool: Pool, ids: number[]): Promise<Map<number, HitRow>> {
   const { rows } = await pool.query<HitRow>(
-    `SELECT c.id::int AS id, c.item_id, c.part, c.start_at, c.text, c.context, coalesce(nullif(i.title, ''), i.thread_title, CASE i.source WHEN 'imessage' THEN 'Texts' ELSE i.source END) AS title, i.at, i.source, i.kind, i.url, i.thread,
+    `SELECT c.id::int AS id, c.item_id, c.part, c.start_at, c.text, c.context, coalesce(nullif(i.title, ''), i.thread_title, CASE i.source WHEN 'imessage' THEN 'Texts' ELSE i.source END) AS title, i.at, i.source, i.kind, i.origin, i.url, i.thread, rec.same_as, rec.org, rec.ref,
        CASE WHEN i.from_me THEN ${OWNER_SQL} || coalesce(' to ' || nullif((SELECT string_agg(p.name, ', ') FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'recipient' AND p.kind <> 'self'), ''), '')
-         ELSE coalesce((SELECT p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'sender' LIMIT 1), i.sender_name, i.sender, '') END AS who
-     FROM memory.chunks c JOIN memory.items i ON i.id = c.item_id WHERE c.id = ANY($1)`,
+         ELSE coalesce((SELECT p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'sender' AND NOT (p.kind = 'person' AND i.source = 'imessage' AND i.sender ~ '^[0-9]{1,6}$') LIMIT 1), i.sender_name, i.sender, '') || coalesce(' to ' || nullif((SELECT string_agg(p.name, ', ') FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = i.id AND r.role = 'recipient' AND p.kind <> 'self'), ''), '') END AS who
+     FROM memory.chunks c JOIN memory.items i ON i.id = c.item_id LEFT JOIN LATERAL (SELECT r.same_as, r.org, r.ref FROM memory.records r WHERE r.item_id = i.id AND r.type IN ('order', 'appointment') ORDER BY r.at DESC LIMIT 1) rec ON true WHERE c.id = ANY($1)`,
     [ids],
   );
   // core's pool hands timestamptz back as text
@@ -312,18 +435,18 @@ async function hitRows(pool: Pool, ids: number[]): Promise<Map<number, HitRow>> 
 
 interface Line { id: string; at: Date; who: string; body: string }
 
-const LINE = `m.id, m.at, m.body, CASE WHEN m.from_me THEN ${OWNER_SQL} ELSE coalesce((SELECT p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = m.id AND r.role = 'sender' LIMIT 1), m.sender_name, m.sender, '') END AS who`;
+const LINE = `m.id, m.at, m.body, CASE WHEN m.from_me THEN ${OWNER_SQL} ELSE coalesce((SELECT p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = m.id AND r.role = 'sender' AND NOT (p.kind = 'person' AND m.source = 'imessage' AND m.sender ~ '^[0-9]{1,6}$') LIMIT 1), m.sender_name, m.sender, '') END AS who`;
 
 /** Each text's conversation: the messages of its thread BEFORE ahead of it and AFTER behind it within a day, itself included. */
-async function conversations(pool: Pool, ids: string[]): Promise<Map<string, Line[]>> {
+async function conversations(pool: Pool, ids: string[], privateItems = false, includeCodes = false): Promise<Map<string, Line[]>> {
   if (ids.length === 0) return new Map();
-  const columns = "m.id, m.at, m.from_me, m.sender, m.sender_name, m.body";
+  const columns = "m.id, m.at, m.from_me, m.sender, m.sender_name, m.body, m.source";
   const { rows } = await pool.query<Line & { hit: string }>(
     `SELECT h.id AS hit, ${LINE}
      FROM memory.items h CROSS JOIN LATERAL (
-       (SELECT ${columns} FROM memory.items m WHERE m.source = h.source AND m.thread = h.thread AND m.at < h.at AND m.at > h.at - interval '1 day' ORDER BY m.at DESC LIMIT ${BEFORE})
+       (SELECT ${columns} FROM memory.items m WHERE m.source = h.source AND m.thread = h.thread AND m.at < h.at AND m.at > h.at - interval '1 day' ${privateItems ? "" : `AND ${visibleSql("m")}`} ${includeCodes ? "" : `AND ${withoutCodes("m")}`} ORDER BY m.at DESC LIMIT ${BEFORE})
        UNION ALL
-       (SELECT ${columns} FROM memory.items m WHERE m.source = h.source AND m.thread = h.thread AND m.at >= h.at AND m.at < h.at + interval '1 day' ORDER BY m.at LIMIT ${AFTER + 1})
+       (SELECT ${columns} FROM memory.items m WHERE m.source = h.source AND m.thread = h.thread AND m.at >= h.at AND m.at < h.at + interval '1 day' ${privateItems ? "" : `AND ${visibleSql("m")}`} ${includeCodes ? "" : `AND ${withoutCodes("m")}`} ORDER BY m.at LIMIT ${AFTER + 1})
      ) m
      WHERE h.id = ANY($1) ORDER BY h.id, m.at, m.id`, [ids]);
   const talk = new Map<string, Line[]>();
@@ -332,8 +455,8 @@ async function conversations(pool: Pool, ids: string[]): Promise<Map<string, Lin
 }
 
 /** The messages of a hit's thread from `from` to `to`, one more than JOINED_LINES at most. */
-async function span(pool: Pool, hit: HitRow, from: Date, to: Date): Promise<Line[]> {
-  const { rows } = await pool.query<Line>(`SELECT ${LINE} FROM memory.items m WHERE m.source = $1 AND m.thread = $2 AND m.at BETWEEN $3 AND $4 ORDER BY m.at, m.id LIMIT ${JOINED_LINES + 1}`, [hit.source, hit.thread, from, to]);
+async function span(pool: Pool, hit: HitRow, from: Date, to: Date, privateItems = false, includeCodes = false): Promise<Line[]> {
+  const { rows } = await pool.query<Line>(`SELECT ${LINE} FROM memory.items m WHERE m.source = $1 AND m.thread = $2 AND m.at BETWEEN $3 AND $4 ${privateItems ? "" : `AND ${visibleSql("m")}`} ${includeCodes ? "" : `AND ${withoutCodes("m")}`} ORDER BY m.at, m.id LIMIT ${JOINED_LINES + 1}`, [hit.source, hit.thread, from, to]);
   return rows.map(line => ({ ...line, at: new Date(line.at) }));
 }
 
@@ -342,24 +465,24 @@ async function span(pool: Pool, hit: HitRow, from: Date, to: Date): Promise<Line
 function renderTalk(lines: readonly Line[], hit: HitRow, words: readonly string[]): string {
   const day = (at: Date) => at.toLocaleDateString("en-US", { timeZone: ZONE, month: "short", day: "numeric" });
   return lines.filter(line => line.id === hit.item_id || !/^[\s\uFFFC\uFFFD]*$/.test(line.body)).map(line => {
-    const flat = line.body.replace(/\s+/g, " ").trim();
+    const flat = cleanText(line.body).replace(/\s+/g, " ").trim();
     const text = line.id === hit.item_id ? quoteOf(flat, words, QUOTE_CHARS) : flat.length > TEXT_CHARS ? `${flat.slice(0, TEXT_CHARS).trimEnd()}…`.toWellFormed() : flat;
     return `${day(line.at) === day(hit.at) ? "" : `${day(line.at)}, `}${line.at.toLocaleTimeString("en-US", { timeZone: ZONE, hour: "numeric", minute: "2-digit" })} ${line.who || "?"}: ${text}`;
   }).join("\n");
 }
 
-/** A record on one line, without its ids, provenance and duplicate quotes: "Puttshack booking · Reservation · Puttshack · When Fri, Oct 24, 2025 at 5:10 PM · Ref: VL4PRJ3 · Quote: …". */
+/** A record on one line, without its ids, provenance and duplicate quotes: "Cinema booking · Reservation · Cinema · Ref: AB12CD · Quote: …". */
 function recordLine(body: string): string {
   const line = body.split("\n").map(each => each.trim()).filter(each => each !== "" && !/^(?:id|item|source|confidence|not kept|all_day|people: (?:\[\]|person:)|\w+ quote)\b/i.test(each)).join(" · ");
   return line.length > TEXT_CHARS ? `${line.slice(0, TEXT_CHARS).trimEnd()}…`.toWellFormed() : line;
 }
 
 /** Hits as plain lines, for the CLI and a turn's head. */
-export function renderHits(hits: readonly Hit[]): string {
-  if (hits.length === 0) return "";
+export function renderResults(results: readonly Result[]): string {
+  if (results.length === 0) return "";
   const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  return `Memory (verbatim from ${OWNER.name}'s texts, mail, records, calendar, bookmarks and chats; memory_read <id> opens one; these are the best matches, not all of them: for how many, how much in total or the latest, run memory_query, which counts by SQL over every record and item):\n${hits.map(hit =>
-    [`[${day(hit.date)} · ${hit.source}${hit.who ? ` · ${hit.who}` : ""}] ${hit.title} (${hit.chunk})`, hit.context, hit.record ? `Record: ${hit.record}` : "", hit.url, hit.quote].filter(Boolean).join("\n")).join("\n\n")}`;
+  return `Record (verbatim; fetch <id> opens one; sql counts across the record):\n${results.map(hit =>
+    [`[${hit.strength} · ${day(hit.date)} · ${hit.source}${hit.who ? ` · ${hit.who}` : ""}${hit.more ? ` · ${hit.more} more` : ""}] ${hit.title} (${hit.chunk})`, hit.context, hit.record ? `Record: ${hit.record}` : "", hit.url, hit.quote].filter(Boolean).join("\n")).join("\n\n")}`;
 }
 
 // ── read ──
@@ -367,10 +490,11 @@ export function renderHits(hits: readonly Hit[]): string {
 const PAGE_CHARS = 8 * 1024;
 const WINDOW = 5;
 
-export async function read(pool: Pool, id: string, page?: number) {
+export async function read(pool: Pool, id: string, page?: number, access: { private?: boolean; life?: boolean } = {}) {
   const match = /^(.+)#(\d+)$/.exec(id.trim());
   const itemId = match ? match[1]! : id.trim();
-  const { rows: [item] } = await pool.query("SELECT * FROM memory.items WHERE id = $1", [itemId]);
+  const privateItems = access.private === true && access.life === true;
+  const { rows: [item] } = await pool.query(`SELECT * FROM memory.items i WHERE i.id = $1 ${privateItems ? "" : `AND ${visibleSql("i")}`}`, [itemId]);
   if (!item) throw new Error(`Nothing in memory has id ${itemId}.`);
   const pages: { start: number; text: string }[] = [];
   for (let start = 0; ; ) {
@@ -383,18 +507,18 @@ export async function read(pool: Pool, id: string, page?: number) {
   const { rows: chunks } = await pool.query<{ part: number; start_at: number; heading: string }>("SELECT part, start_at, heading FROM memory.chunks WHERE item_id = $1 ORDER BY part", [itemId]);
   const at = page ?? (match ? Math.max(0, pages.findLastIndex(each => each.start <= (chunks.find(chunk => chunk.part === Number(match[2]))?.start_at ?? 0))) : 0);
   if (!Number.isInteger(at) || at < 0 || at >= pages.length) throw new Error(`${itemId} has ${pages.length} page${pages.length === 1 ? "" : "s"} (0-based).`);
-  const { rows: people } = await pool.query<{ role: string; name: string }>("SELECT r.role, p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id WHERE r.item_id = $1 ORDER BY r.role, p.name", [itemId]);
+  const { rows: people } = await pool.query<{ role: string; name: string }>("SELECT r.role, p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id JOIN memory.items i ON i.id = r.item_id WHERE r.item_id = $1 AND NOT (r.role = 'sender' AND p.kind = 'person' AND i.source = 'imessage' AND i.sender ~ '^[0-9]{1,6}$') ORDER BY r.role, p.name", [itemId]);
   const result: Record<string, unknown> = {
     id: item.id, title: item.title || item.thread_title || item.source, source: item.source, kind: item.kind, date: item.at, url: item.url ?? undefined,
     from: item.from_me ? OWNER.name : item.sender_name ?? item.sender ?? undefined, people: people.map(each => `${each.name} (${each.role})`),
-    text: pages[at]!.text, page: at, pages: pages.length,
+    text: cleanText(pages[at]!.text), page: at, pages: pages.length,
   };
   if (item.kind === "message" && item.thread) {
     // texts: the same chat within a day; else at least the message before and after
     const day = item.source === "imessage" ? "AND at BETWEEN $4::timestamptz - interval '1 day' AND $4::timestamptz + interval '1 day'" : "";
-    const near = async (cmp: "<" | ">", dir: "DESC" | "ASC") => (await pool.query(`SELECT id, at, from_me, sender_name, sender, left(body, 300) AS text FROM memory.items WHERE source = $1 AND thread = $2 AND id <> $3 AND at ${cmp} $4 ${day} ORDER BY at ${dir} LIMIT ${WINDOW}`, [item.source, item.thread, item.id, item.at])).rows;
+    const near = async (cmp: "<" | ">", dir: "DESC" | "ASC") => (await pool.query(`SELECT id, at, from_me, sender_name, sender, left(body, 300) AS text FROM memory.items i WHERE source = $1 AND thread = $2 AND id <> $3 AND at ${cmp} $4 ${day} ${privateItems ? "" : `AND ${visibleSql("i")}`} ORDER BY at ${dir} LIMIT ${WINDOW}`, [item.source, item.thread, item.id, item.at])).rows;
     const around = [...(await near("<", "DESC")).reverse(), ...(await near(">", "ASC"))];
-    if (around.length > 0) result.thread = around.map(each => ({ id: each.id, date: each.at, from: each.from_me ? OWNER.name : each.sender_name ?? each.sender, text: each.text.replace(/\s+/g, " ").trim() }));
+    if (around.length > 0) result.thread = around.map(each => ({ id: each.id, date: each.at, from: each.from_me ? OWNER.name : each.sender_name ?? each.sender, text: cleanText(each.text).replace(/\s+/g, " ").trim() }));
   } else if (chunks.length > 1) result.sections = chunks.map(chunk => ({ chunk: `${itemId}#${chunk.part}`, heading: chunk.heading }));
   return result;
 }

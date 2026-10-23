@@ -8,10 +8,12 @@ const COMMANDS: Record<string, Command> = {
   connect: ["give a client (omp, claude-code, codex, cursor, claude-desktop, json) a token and the brain", async () => (await import("./connect.js")).connectCommand],
   token: ["list, add or revoke agent tokens and OAuth grants", async () => (await import("./mcp/auth.js")).tokenCommand],
   mcp: ["stdio MCP server relaying to memory-mcp (NBRAIN_TOKEN, NBRAIN_URL)", async () => (await import("./mcp/stdio.js")).mcpCommand],
-  save: ['save a URL, or - for text on stdin  [--why "…"] [--title "…"]', async () => { const { captureCommand } = await import("./capture/save.js"); return args => captureCommand(["save", ...args]); }],
+  brief: ['a brief for a task, from memory-mcp  --task "…" [--project <name or dir>]', async () => (await import("./brief.js")).briefCommand],
+  save: ['save a URL, or - for text on stdin  [--why "…"] [--title "…"] [--project <name>] [--as research]', async () => { const { captureCommand } = await import("./capture/save.js"); return args => captureCommand(["save", ...args]); }],
   search: ["search the brain  <query> [--source a,b] [--limit n]", async () => searchCommand],
   skill: ["skills and styles: list | show <name> | check <dir>", async () => (await import("./skills/cli.js")).skillsCommand],
-  garden: ["garden one day now  [--day YYYY-MM-DD] [--dry-run]", async () => (await import("./garden.js")).gardenCommand],
+  now: ["write now.md now  [--dry-run]", async () => (await import("./now.js")).nowCommand],
+  weekly: ["print this week's Sunday message  [--send]", async () => (await import("./weekly.js")).weeklyCommand],
   omp: ["read new omp sessions now", async () => (await import("./connectors/omp.js")).ompCommand],
   eval: ["retrieval eval: facts found in the top 10  [questions.json]", async () => (await import("./eval/recall.js")).evalCommand],
 };
@@ -21,11 +23,11 @@ async function searchCommand(args: string[]): Promise<void> {
   const source = flag("source")?.split(",");
   const limit = flag("limit");
   if (!args.length) throw new Error("usage: search <query> [--source a,b] [--limit n]");
-  const [{ default: pg }, { search, renderHits }] = await Promise.all([import("pg"), import("./memory/search.js")]);
+  const [{ default: pg }, { search, renderResults }] = await Promise.all([import("pg"), import("./memory/search.js")]);
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   try {
     const result = await search(pool, { query: args.join(" "), ...(source ? { source } : {}), ...(limit ? { limit: Number(limit) } : {}) });
-    console.log(renderHits(result.hits));
+    console.log(renderResults(result.results));
   } finally {
     await pool.end();
   }

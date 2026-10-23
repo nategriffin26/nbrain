@@ -4,8 +4,10 @@
   personal goes in `$BRAIN_HOME`; a change only one owner wants becomes a setting there, not code here.
 - Read README.md and docs/ first. A running brain's own notes (services, doors, secrets' names) are in
   `$BRAIN_HOME/OPERATIONS.md` (default `~/.brain`); read them before touching a live install.
-- Tool names, inputs and scopes (`src/mcp/contract.ts` and the tool table in `src/mcp/server.ts`) are a public
-  contract: connected bots call them by name. Add tools freely; renaming one or changing its inputs breaks them.
+- Tool names and inputs (`src/mcp/contract.ts`) and each tool's scopes (where it is registered: `src/mcp/server.ts`,
+  `writes.ts`, `src/library/mcp.ts`, `src/capture/save.ts`, `src/skills/mcp.ts`) are a public contract: connected bots,
+  and ChatGPT deep research through `search` and `fetch`, call them by name. Add tools freely; renaming one or changing
+  its inputs breaks them.
 - Never print secrets: tokens.json stores sha256 only; role passwords live in the env file or the Keychain.
 - Never kill processes by pattern: `pkill -f "tsx src/mcp/server.ts"` also matches the live server. Stop a test server
   by its PID or `lsof -tiTCP:<port> -sTCP:LISTEN`.

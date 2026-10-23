@@ -1,4 +1,4 @@
-// memory_skills: every skill, style and built-in as one memory item (source `skill`), so memory_search and context_get
+// memory_skills: every skill, style and built-in as one memory item (source `skill`), so search and the brief
 // find the one that fits a task. The item's body is the description plus the whole SKILL.md body: retrieval over name and
 // description alone misses (SkillRouter: BM25 on them scored 0 Hit@1, 34.7% with the body; arxiv.org/html/2603.22455v1).
 import type { Pool } from "pg";

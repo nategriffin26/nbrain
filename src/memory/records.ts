@@ -1,5 +1,5 @@
 // Typed records: bills, payments, orders and appointments read out of mail, texts and calendar events into memory.records,
-// so who / how many / how much / latest are answered by SQL (the memory_query tool) instead of by reading hits.
+// so who / how many / how much / latest are answered by the sql tool instead of by reading search results.
 // Each new mail or text is read by the Extraction role, one call per item, with a prompt measured on 270 labelled
 // messages (266/270 on Haiku, 268 on Sonnet).
 import type { Pool, QueryArrayResult } from "pg";
@@ -99,11 +99,13 @@ function sameAs(type: string, row: { org: string | null; ref: string | null; amo
   return null;
 }
 
-/** A later record of the same thing supersedes the earlier: chain `supersedes` / `superseded_by` in sent order. */
+/** A later record of the same thing supersedes the earlier: chain `supersedes` / `superseded_by` in sent order. A record
+ *  a correction retracted (superseded_by correction:<id>) stays retracted and out of the chain. */
 export async function chain(pool: Pool, key: string): Promise<void> {
   await pool.query(
     `UPDATE memory.records r SET supersedes = g.prev, superseded_by = g.next
-     FROM (SELECT id, lag(id) OVER w AS prev, lead(id) OVER w AS next FROM memory.records WHERE same_as = $1 WINDOW w AS (ORDER BY at, id)) g
+     FROM (SELECT id, lag(id) OVER w AS prev, lead(id) OVER w AS next FROM memory.records
+           WHERE same_as = $1 AND coalesce(superseded_by, '') NOT LIKE 'correction:%' WINDOW w AS (ORDER BY at, id)) g
      WHERE r.id = g.id AND (r.supersedes IS DISTINCT FROM g.prev OR r.superseded_by IS DISTINCT FROM g.next)`,
     [key],
   );
@@ -163,8 +165,8 @@ export async function extractRecords(pool: Pool, until: number, concurrency = 4)
   return read;
 }
 
-// ── memory_query ──
-/** The role memory_query runs as: it reads the memory schema and nothing else, so a query written from a hostile mail cannot reach the rest of the database or the host. */
+// ── sql ──
+/** The sql tool's role reads the memory schema only, so a query written from hostile mail cannot reach other data or the host. */
 export async function prepareReader(pool: Pool): Promise<void> {
   await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'memory_reader') THEN CREATE ROLE memory_reader NOLOGIN; END IF; END $$");
   await pool.query("GRANT USAGE ON SCHEMA memory TO memory_reader");

@@ -2,13 +2,12 @@
 // - tools skill_get / skill_save, which every host can call;
 // - every skill file as a skill:// resource (resources/list shows each SKILL.md; the template reads any file);
 // - the MCP Skills extension (io.modelcontextprotocol/skills, SEP-2640): skills/list and skills/get with digest manifests;
-// - a short catalog in the server instructions and the top matches in context_get.
+// - a short catalog in the server instructions, and up to three nearest the task in the brief (src/brief.ts).
 import { type McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { MCP_TOOLS } from "../mcp/contract.js";
 import { type Agent, type Call, has, type Tool } from "../mcp/types.js";
-import type { SearchInput, SearchResult } from "../memory/search.js";
 import { catalog, type Entry, firstSentence, getSkill, manifest, pageOf, readSkillFile, type SaveInput, saveSkill, SkillError, splitUri } from "./library.js";
 
 /** MCP image content is base64 inline; past this an image is described, not sent. */
@@ -126,20 +125,4 @@ export async function skillsInstructions(agent: Agent): Promise<string> {
     else text += line;
   }
   return rest.length ? `${text}\n- Also: ${rest.join(", ")}` : text;
-}
-
-/** context_get's `## Skills and styles for this`: the 3 that best match the topic (memory search over source skill), then
- *  the defaults, each with how to load it. */
-export async function skillsSection(agent: Agent, topic: string | undefined, find: (input: SearchInput) => Promise<SearchResult>): Promise<string> {
-  if (!reads(agent)) return "";
-  const { skills } = await catalog();
-  const byId = new Map(skills.map(entry => [`skill:${entry.path}`, entry]));
-  let top: Entry[] = [];
-  if (topic) {
-    try { top = (await find({ query: topic, source: ["skill"], limit: 3 })).hits.flatMap(hit => byId.get(hit.id) ?? []); }
-    catch { /* search is a bonus here; the defaults still show */ }
-  }
-  const shown = [...top, ...skills.filter(entry => entry.default && !top.includes(entry))];
-  if (!shown.length) return "";
-  return `## Skills and styles for this\nLoad the one that fits before that work (skill_get {"name":"<path>"}) and follow it.\n${shown.map(entry => `- ${label(entry)}: ${firstSentence(entry.description)}`).join("\n")}`;
 }

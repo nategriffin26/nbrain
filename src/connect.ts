@@ -1,9 +1,10 @@
 // `nbrain connect <client>`: give a client its own token (its name is the agent every write is signed with) and write
 // the brain into that client's MCP config. HTTP where the client sends headers; the stdio relay (`nbrain mcp`) where it
-// only starts local commands. --remote points it at PUBLIC_URL instead of loopback (cloud and other machines).
+// only starts local commands. --remote points it at PUBLIC_URL instead of loopback (cloud and other machines). omp also
+// gets the nbrain-brief extension (integrations/omp), linked into its extensions folder, which briefs each main session.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
@@ -11,8 +12,9 @@ import { BRAND } from "./config.js";
 import { mintToken } from "./mcp/auth.js";
 import { SCOPES, type Scope } from "./mcp/types.js";
 
-const run = promisify(execFile);
 const RELAY = new URL("../bin/nbrain", import.meta.url).pathname;
+const OMP_BRIEF = new URL("../integrations/omp/nbrain-brief.ts", import.meta.url).pathname;
+const run = promisify(execFile);
 
 /** Merge one server into a JSON config's `mcpServers`, keeping a dated copy of the file it replaces. */
 async function mergeJson(file: string, entry: Record<string, unknown>): Promise<string> {
@@ -25,7 +27,14 @@ async function mergeJson(file: string, entry: Record<string, unknown>): Promise<
 }
 
 const CLIENTS: Record<string, (url: string, token: string) => Promise<string>> = {
-  omp: (url, token) => mergeJson(`${homedir()}/.omp/agent/mcp.json`, { type: "http", url, headers: { Authorization: `Bearer ${token}` } }),
+  omp: async (url, token) => {
+    const config = await mergeJson(`${homedir()}/.omp/agent/mcp.json`, { type: "http", url, headers: { Authorization: `Bearer ${token}` } });
+    const link = `${homedir()}/.omp/agent/extensions/nbrain-brief.ts`;
+    await mkdir(dirname(link), { recursive: true });
+    await rm(link, { force: true });
+    await symlink(OMP_BRIEF, link);
+    return `${config} and ${link}`;
+  },
   cursor: (url, token) => mergeJson(`${homedir()}/.cursor/mcp.json`, { url, headers: { Authorization: `Bearer ${token}` } }),
   "claude-desktop": (url, token) => mergeJson(`${homedir()}/Library/Application Support/Claude/claude_desktop_config.json`, { command: RELAY, args: ["mcp"], env: { NBRAIN_URL: url, NBRAIN_TOKEN: token } }),
   "claude-code": async (url, token) => {

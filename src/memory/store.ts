@@ -2,7 +2,7 @@
 // Embeddings come from Ollama's Qwen3-Embedding-0.6B at its full 1024 dimensions (nothing leaves the machine).
 import type { Pool } from "pg";
 import { OWNER } from "../config.js";
-import { chunkBody, sha256 } from "./text.js";
+import { chunkBody, cleanText, sha256 } from "./text.js";
 
 export const EMBED_MODEL = "qwen3-embedding:0.6b";
 const EMBED_BATCH = 16;
@@ -75,8 +75,7 @@ export async function writeItems(pool: Pool, items: readonly ItemInput[]): Promi
   const byExt = new Map(existing.filter(row => row.ext_id !== null).map(row => [`${row.source}\u0000${row.ext_id}`, row]));
   const changed: (ItemInput & { hash: string })[] = [];
   for (const raw of items) {
-    // Postgres text holds no NUL; a source that sends one loses only that character
-    const item = { ...raw, title: raw.title.replaceAll("\u0000", ""), body: raw.body.replaceAll("\u0000", "") };
+    const item = { ...raw, title: cleanText(raw.title), body: cleanText(raw.body) };
     const hash = sha256(JSON.stringify([item.title, item.at.toISOString(), item.body, item.people ?? [], item.handles ?? [], item.thread_title ?? null]));
     const have = byId.get(item.id) ?? (item.ext_id ? byExt.get(`${item.source}\u0000${item.ext_id}`) : undefined);
     if ((have?.hash === hash && !item.force) || (have?.origin === "event" && item.origin === "context")) continue;
@@ -88,7 +87,7 @@ export async function writeItems(pool: Pool, items: readonly ItemInput[]): Promi
   // people: given ids, plus whoever the handles name
   const handles = [...new Set(changed.flatMap(item => (item.handles ?? []).map(each => each.handle)))];
   const { rows: owners } = handles.length === 0 ? { rows: [] } : await pool.query<{ id: string; handle: string }>(
-    "SELECT p.id, h.handle FROM memory.people p CROSS JOIN LATERAL jsonb_array_elements_text(p.handles) AS h(handle) WHERE h.handle = ANY($1)", [handles]);
+    "SELECT p.id, h.handle FROM memory.people p CROSS JOIN LATERAL jsonb_array_elements_text(p.handles) AS h(handle) WHERE h.handle = ANY($1) AND (p.kind <> 'person' OR h.handle !~ '^\\+?[0-9]{1,6}$')", [handles]);
   const ownerOf = new Map(owners.map(row => [row.handle, row.id]));
   const roles = changed.map(item => {
     const all = [...(item.people ?? []), ...(item.handles ?? []).flatMap(each => ownerOf.has(each.handle) ? [{ id: ownerOf.get(each.handle)!, role: each.role }] : [])];
@@ -161,4 +160,19 @@ export async function writeItems(pool: Pool, items: readonly ItemInput[]): Promi
     client.release();
   }
   return changed.length;
+}
+
+/** Rebuild existing items affected by text cleaning; verbatim connector events remain untouched. */
+export async function reindexText(pool: Pool): Promise<number> {
+  let after = "";
+  let written = 0;
+  for (;;) {
+    const { rows } = await pool.query<ItemInput>(
+      `SELECT i.*, coalesce((SELECT jsonb_agg(jsonb_build_object('id', p.person_id, 'role', p.role)) FROM memory.item_people p WHERE p.item_id = i.id), '[]') AS people
+       FROM memory.items i WHERE i.id > $1 AND i.source IN ('gmail', 'imessage') ORDER BY i.id LIMIT 100`, [after]);
+    if (!rows.length) return written;
+    after = rows.at(-1)!.id;
+    const changed = rows.filter(row => cleanText(row.body) !== row.body || cleanText(row.title) !== row.title);
+    if (changed.length) written += await writeItems(pool, changed.map(row => ({ ...row, at: new Date(row.at) })));
+  }
 }

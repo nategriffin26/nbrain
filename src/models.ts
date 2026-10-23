@@ -1,4 +1,4 @@
-// The brain's model calls (records extraction, notes and profile, capture enrichment, image descriptions) go to an
+// The brain's model calls (records extraction, the curator, now.md, capture enrichment, image descriptions) go to an
 // OpenAI-compatible chat endpoint: LLM_URLS, tried in order (the next when one can't be reached), with the key in
 // LLM_API_KEY or the file LLM_API_KEY_FILE. Each call names its role; the role's model and thinking come from
 // brain.model_roles when a row exists, else MODEL_<ROLE> ("model" or "model@thinking"), else the seed.
@@ -11,9 +11,9 @@ type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const ROLE_SEEDS = {
   reading: { model: "anthropic/claude-haiku-5-5", thinking: "off" },
   extraction: { model: "anthropic/claude-haiku-5-5", thinking: "off" },
-  // the keep step tells a note that says or replaces a statement from one that only covers its subject; with thinking
-  // off it got the live fixtures (notes.model.test.ts) right 0 of 3 runs, with low 3 of 3
-  notes: { model: "anthropic/claude-sonnet-5-5", thinking: "low" },
+  // the curator and now.md judge what the owner's words change in the profile and what is in flight: the notes pass
+  // before them got its fixtures right 0 of 3 runs with thinking off, 3 of 3 with low
+  curator: { model: "anthropic/claude-sonnet-5-5", thinking: "low" },
 } satisfies Record<string, { model: string; thinking: Thinking }>;
 export type Role = keyof typeof ROLE_SEEDS;
 type Choice = { model: string; thinking: Thinking };

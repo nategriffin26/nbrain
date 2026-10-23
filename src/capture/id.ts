@@ -3,6 +3,8 @@ import { chunkBody, sha256 } from "../memory/text.js";
 
 /** The item a capture event becomes. */
 export const savedId = (externalId: string) => `saved:${sha256(externalId).slice(0, 16)}`;
+/** The item a capture saved `--as research` becomes: the same hash as a saved one, under source research. */
+export const researchId = (externalId: string) => `research:${sha256(externalId).slice(0, 16)}`;
 /** External id of pasted text or a local file: its content, so saving the same thing twice is one capture. */
 export const contentId = (form: "text" | "file", bytes: string | Uint8Array) => `${form}:${sha256(typeof bytes === "string" ? bytes : Buffer.from(bytes).toString("latin1")).slice(0, 16)}`;
 

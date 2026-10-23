@@ -2,10 +2,10 @@
 // bookmarks, chat turns) into memory.items/chunks within a minute of arrival, and again when a connector rewrites the row.
 import type { Pool } from "pg";
 import { OWNER } from "../config.js";
-import { savedId, whyContexts } from "../capture/id.js";
+import { researchId, savedId, whyContexts } from "../capture/id.js";
 import { cursorOk, readCursor, type NewEvent } from "../events/store.js";
 import { type ItemInput, writeItems } from "./store.js";
-import { foldHandle } from "./text.js";
+import { cleanText, foldHandle } from "./text.js";
 
 /** A brain.events row as the indexer reads it. */
 interface EventRow { id: number; kind: NewEvent["kind"]; external_id: string | null; at: string; title: string | null; body: string | null; url: string | null; data: Record<string, unknown>; rev: string }
@@ -20,7 +20,7 @@ export function itemOfEvent(event: Pick<NewEvent, "kind" | "at" | "title" | "bod
   const data = (event.data ?? {}) as Record<string, unknown>;
   const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
   const list = (value: unknown) => (Array.isArray(value) ? value.filter((each): each is string => typeof each === "string") : []);
-  const body = (event.body ?? "").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  const body = cleanText(event.body ?? "").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   const base = { ext_id: event.external_id, title: event.title ?? "", at: new Date(event.at), url: event.url, body, meta: { kind: event.kind, ...data }, origin: "event" as const, event_id: event.id };
   switch (event.kind) {
     case "mail.received":
@@ -50,7 +50,7 @@ export function itemOfEvent(event: Pick<NewEvent, "kind" | "at" | "title" | "bod
       return { ...base, id: `omp:${event.external_id}`, source: "omp", kind: "message", thread: text(data.session), thread_title: text(event.title) ?? text(data.project), sender: OWNER.name, from_me: true };
     case "capture":
       // the owner's reason for saving it is searchable at once (each chunk's context line); enrichment adds the rest
-      return { ...base, id: savedId(event.external_id ?? ""), source: "saved", kind: data.form === "note" ? "note" : data.form === "pdf" || data.form === "file" ? "doc" : "page", sender: text(data.by), contexts: whyContexts(body, text(data.why)) };
+      return { ...base, id: data.as === "research" ? researchId(event.external_id ?? "") : savedId(event.external_id ?? ""), source: data.as === "research" ? "research" : "saved", kind: data.as === "research" || data.form === "note" ? "note" : data.form === "pdf" || data.form === "file" ? "doc" : "page", sender: text(data.by), contexts: whyContexts(body, text(data.why)) };
     default:
       return undefined;
   }

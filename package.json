@@ -4,7 +4,9 @@
   "description": "A personal second brain every agent shares: your mail, texts, sessions and saved pages, a curated profile, and skills and styles distilled from finished work, behind one MCP server.",
   "license": "MIT",
   "private": true,
-  "bin": { "nbrain": "bin/nbrain" },
+  "bin": {
+    "nbrain": "bin/nbrain"
+  },
   "type": "module",
   "engines": {
     "node": ">=26"
@@ -21,6 +23,7 @@
     "hono": "^4.13.13",
     "linkedom": "^0.18.13",
     "pg": "8.23.1",
+    "playwright-core": "1.64.1",
     "tsx": "4.23.15",
     "unpdf": "^1.9.1",
     "yaml": "2.9.1",

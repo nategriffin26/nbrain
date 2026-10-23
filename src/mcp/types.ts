@@ -27,8 +27,9 @@ export const isContent = (value: unknown): value is CallToolResult => typeof val
 
 export const has = (agent: Agent, scope: Scope) => agent.scopes.includes(scope);
 
-/** What a work-scope caller may search and open: X bookmarks and their articles, the research wiki, what agents saved,
- *  skills and styles, and the owner's own omp work sessions. Never texts, mail, records, calendar, bot chats or notes. */
-export const WORK_SOURCES = ["x", "wiki", "saved", "skill", "omp"];
+/** What a work-scope caller may search and open: X bookmarks and their articles, the research wiki and research notes,
+ *  what agents saved, skills and styles, and the owner's own omp work sessions. Never texts, mail, records, calendar,
+ *  bot chats or notes. */
+export const WORK_SOURCES = ["x", "wiki", "saved", "research", "skill", "omp"];
 /** Sources this agent may search or open; undefined means every source. */
 export const sourcesFor = (agent: Agent) => has(agent, "life") || has(agent, "archive") ? undefined : has(agent, "work") ? WORK_SOURCES : [];

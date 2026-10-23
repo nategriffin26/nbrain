@@ -2,6 +2,17 @@
 
 memory-mcp serves one MCP endpoint, `http://127.0.0.1:8830/mcp` (Streamable HTTP; the port is `MEMORY_MCP_PORT`). Every request carries `Authorization: Bearer <token>`, and the token decides who the caller is and what it may do. A client that can send headers talks to it over HTTP. A client that only starts local commands uses the stdio relay, `bin/nbrain mcp`, which forwards each JSON-RPC message to the HTTP server with the token from `NBRAIN_TOKEN`. Either way the client gets the same tools, scopes and identity.
 
+## What each client gets
+
+| Client | Connects through | The brief |
+|---|---|---|
+| omp | `nbrain connect omp`: HTTP, plus the `nbrain-brief` extension | Added to each main session on its first prompt, for that prompt and the session's directory |
+| Claude Code, Cursor | `nbrain connect claude-code` or `cursor`: HTTP | The server's instructions tell the agent to call `brief` first |
+| Codex, Claude Desktop | `nbrain connect codex` or `claude-desktop`: the stdio relay | The same |
+| ChatGPT, claude.ai | A custom connector through the [OAuth door](#oauth-for-cloud-chat-apps) | The same; ChatGPT deep research calls `search` and `fetch` |
+
+Every client also gets the skills catalog in the server's instructions, every skill file as a `skill://` resource and the MCP Skills extension. A host that loads MCP prompts gets the brief as the `about-<owner>` prompt too. The omp extension skips subagents and never briefs a resumed session twice; when the brain does not answer, it shows one short notice and adds nothing.
+
 ## nbrain connect
 
 ```sh
@@ -29,6 +40,8 @@ Merged into `~/.omp/agent/mcp.json`:
   }
 }
 ```
+
+`integrations/omp/nbrain-brief.ts` is linked into `~/.omp/agent/extensions/`. It runs `nbrain brief` with the token above.
 
 ### Claude Code
 
@@ -99,10 +112,10 @@ For a client on another machine, run it with `--remote` on the brain's machine a
 
 | Scope | Grants |
 |---|---|
-| `work` | `context_get` with the `## Work` halves of the profile files and journal; `memory_search` and `memory_read` over X bookmarks, saved items, skills and coding sessions; `skill_get` |
-| `life` | The `## Life` halves, the life profile, people (`memory_person`, `memory_profile`), and search and read over every source, including mail, texts, calendar, notes and records |
-| `archive` | `memory_query` (read-only SQL over schema `memory`) and `memory_read` of any item |
-| `write` | `remember`, `save` and `skill_save` |
+| `work` | `brief`, `search`, `fetch`, `changes`, `library` and `skill_get`, over the work profile files, now's project blocks, X bookmarks, saved pages, research notes, skills and coding sessions |
+| `life` | The same tools plus `person`, over `life.md`, now's Life block and every source, including mail, texts, calendar, records, chats and notes, and private items when asked |
+| `archive` | `sql` (read-only SQL over schema `memory`) and `fetch` of any item |
+| `write` | `save`, `remember`, `correct`, `private`, `library_mark` and `skill_save` |
 
 Give each agent the least it needs:
 
@@ -111,7 +124,7 @@ Give each agent the least it needs:
 - `archive` only for an agent that has to count or sum across everything, such as totals of payments by vendor.
 - Read-only agents and scripts: leave out `write`.
 
-Tokens are managed on the brain's machine. Changes apply on the next request; no restart is needed.
+Which tool each scope opens, tool by tool, is in [how it works](how-it-works.md#scopes). Tokens are managed on the brain's machine. Changes apply on the next request; no restart is needed.
 
 ```sh
 nbrain token add <agent> --scopes work,life [--signer <name>]   # prints the token once, on stdout
@@ -150,7 +163,7 @@ Your own tailnet devices reach the Funnel port directly over the tailnet, so one
 
 ### OAuth for cloud chat apps
 
-Chat apps that run in the cloud and connect to remote MCP servers sign in with OAuth 2.1 rather than a pasted token. memory-mcp is its own authorization server: dynamic client registration and client ID metadata documents, PKCE (S256 only), and resource indicators (each token is bound to `PUBLIC_URL/mcp`). The owner is proven by Tailscale identity; there is no password.
+ChatGPT and claude.ai run in the cloud and sign in to remote MCP servers with OAuth 2.1 rather than a pasted token. claude.ai connects from Anthropic's cloud, so the server must be reachable from Anthropic's IP ranges ([Anthropic](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)); Funnel does that. memory-mcp is its own authorization server: dynamic client registration and client ID metadata documents, PKCE (S256 only), and resource indicators (each token is bound to `PUBLIC_URL/mcp`). The owner is proven by Tailscale identity; there is no password.
 
 1. Put memory-mcp behind Funnel (above) and add to the env file:
 
@@ -167,13 +180,15 @@ Access tokens last 15 minutes and refresh tokens 30 days. Each refresh rotates t
 
 Each grant is its own agent, `oauth-<client-name>`, and its writes are signed with the client's name. `nbrain token list` shows grants as kind `oauth` with their client, expiry and grant id. `nbrain token revoke <grant-id>` ends one; `nbrain token revoke oauth-<client-name>` ends every grant of that agent.
 
+ChatGPT deep research works with a server that has two read-only tools, `search` and `fetch` ([OpenAI](https://developers.openai.com/api/docs/mcp)). nbrain's `search` and `fetch` are those tools: `search` takes a `query` and answers `results` with `id`, `title` and `url`, and `fetch` takes an `id` and answers `id`, `title`, `text`, `url` and `metadata`, both also as structured content. A work-scope grant is enough for deep research over bookmarks, saved pages, research notes and the library's items.
+
 ### Cloudflare Tunnel
 
 Some clients can reach only port 443. Funnel on 443 serves them if nothing else on the device uses that port. If something does, a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) can map a hostname of yours on 443 to `http://127.0.0.1:8830`. Requests through it are never local and carry no Tailscale identity, so static bearer tokens work and OAuth consent does not. Connect such a client with `nbrain connect json --agent <name>` and replace the URL with `https://<hostname>/mcp`. As with Funnel, every path on the hostname reaches memory-mcp, and the token is the lock.
 
 ## Plain HTTP for scripts and shortcuts
 
-The server is stateless: each POST is a complete JSON-RPC request, with no `initialize` and no session. Send `Accept: application/json, text/event-stream` (the transport refuses a request without both) and the answer comes back as one JSON body.
+The server is stateless: each POST is a complete JSON-RPC request, and `initialize` is accepted but not needed. There is no session and no standalone event stream: GET and DELETE answer 405. Send `Accept: application/json, text/event-stream` (the transport refuses a request without both) and the answer comes back as one JSON body.
 
 ```sh
 TOKEN=$(nbrain token add shortcuts --scopes work)
@@ -182,13 +197,13 @@ curl -s http://127.0.0.1:8830/mcp \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"contextual retrieval","limit":5}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"contextual retrieval","limit":5}}}'
 ```
 
 A tool's answer is JSON text in `result.content[0].text`:
 
 ```sh
-... | jq -r '.result.content[0].text | fromjson | .hits[] | "\(.date)  \(.title)"'
+... | jq -r '.result.content[0].text | fromjson | .results[] | "\(.date)  \(.strength)  \(.title)"'
 ```
 
 `"method":"tools/list"` lists the tools this token may call; tools outside its scopes are not offered at all. A wrong or missing token answers HTTP 401. A call the token's scopes refuse, such as a work token opening a mail item, comes back with `result.isError` set and the reason as its text.

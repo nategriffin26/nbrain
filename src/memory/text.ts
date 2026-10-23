@@ -5,6 +5,9 @@ import { createHash } from "node:crypto";
 export const fold = (text: string): string => text.normalize("NFKC").toLocaleLowerCase("en");
 export const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
+/** Mail preheaders pad with invisible format characters; keep joiners used in real emoji and scripts. */
+export const cleanText = (text: string): string => text.replace(/[\u0000\u00ad\u034f\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "").replace(/(?<=\s)\u200c|\u200c(?=\s)/g, "");
+
 /** Words that say nothing about what is asked. */
 const FILLER = new Set(
   `a an the and or but of to in on at for from by with about into over is are was were be been being am do does did done have has had
@@ -77,6 +80,7 @@ export function chunkBody(body: string): Chunk[] {
  *  none is there. A word counts where a word starts. A cut through an emoji is mended (the reranker's JSON parser rejects
  *  a lone surrogate, which failed the whole search). */
 export function quoteOf(text: string, words: readonly string[], chars: number, near = 0): string {
+  text = cleanText(text);
   const folded = fold(text);
   const lead = Math.round(chars / 5);
   const marks: { at: number; end: number; word: number }[] = [];

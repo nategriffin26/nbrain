@@ -9,8 +9,8 @@ The [quickstart](../README.md#quickstart) gets a brain running in two shells. Th
 | Path | Holds |
 |---|---|
 | `env` | Every setting, from [`env.example`](../env.example); `bin/nbrain` and every `bin/run-*.sh` load it |
-| `context/` | The context repo: profile files, journal, skills and styles, in git |
-| `captures/` | Snapshots of saved pages and PDFs |
+| `context/` | The context repo, in git: profile files, `closed.md`, `now.md`, skills and styles |
+| `captures/` | Snapshots of saved pages and PDFs; screenshots, archives and recordings of library references |
 | `memory-mcp/` | `tokens.json` (hashes only) and the `DISABLED` kill switch |
 | `logs/` | Each job's log, `memory-mcp.log` and `memory-mcp-writes.log` |
 | `eval/` | Your eval questions and results |
@@ -49,8 +49,15 @@ Name the ones you want in `CONNECTORS` (for example `CONNECTORS=gmail,imessage,c
 
 - **Mail, texts, calendar.** Run an [Executor](https://executor.sh) with the `gmail`, `apple-messages` and `apple-calendar` apps connected. Ingest calls its MCP server at `EXECUTOR_MCP_URL` with the CLI key from `~/.executor/v2/cli/keys.json`.
 - **X bookmarks.** Install [xurl](https://github.com/xdevplatform/xurl) and sign it in to your account. Each post read costs money on X's API, so only new bookmarks are read, twice a day.
-- **Coding sessions.** Reads [omp](https://github.com/can1357/oh-my-pi) sessions from `OMP_SESSIONS`. With `OMP_PROJECT_MEMORY` set, `context_get` adds a project's omp memory when the topic names it.
-- **Readers.** `yt-dlp` reads YouTube. For pages that render in JavaScript and for the pages X posts link to, set `TF_PY` to a script that answers `fetch <urls> --json`; without it, thin pages are kept as read and linked pages are skipped.
+- **Coding sessions.** Reads [omp](https://github.com/can1357/oh-my-pi) sessions from `OMP_SESSIONS`.
+- **Readers.** `yt-dlp` reads YouTube. For pages that render in JavaScript and for the pages X posts link to, set `PAGE_READER` to a command that answers `read <urls> --json --lane <name> --max-wait <s> --max-chars 0`; without it, thin pages are kept as read and linked pages are skipped.
+- **Library captures.** `npm install` brings `playwright-core`, which drives an installed Google Chrome, headless. Without Chrome, captures wait: the run stops, logs it, and leaves the cards for when Chrome is there.
+
+## Now and the Sunday message
+
+`now.md` is written each morning from the repos under `NOW_ROOTS` (a colon list; each folder and its children) with commits in the last week, and from the desks under `NOW_DESKS`: one per folder in `$NOW_DESKS/memory/`, with its `journal.md` and a `$NOW_DESKS/<desk>/` folder when there is one. With neither set, it has only the Life block. `nbrain now --dry-run` prints it without writing.
+
+The Sunday message goes out through `BRAIN_NOTIFY`: a command that reads the text on stdin, split into words like a shell line but never run through a shell, such as `mail -s "Your brain this week" you@example.com`. Without it, ingest logs the message instead of sending it. `nbrain weekly` prints it.
 
 ## Backups
 
@@ -80,13 +87,14 @@ All in `$BRAIN_HOME/env`; [`env.example`](../env.example) has each one with a co
 | `RERANK_URL` | | The reranker; unset skips reranking |
 | `LLM_URLS` | `http://127.0.0.1:4000` | OpenAI-compatible endpoints, tried in order |
 | `LLM_API_KEY`, `LLM_API_KEY_FILE` | | The key, or a file holding it |
-| `MODEL_READING`, `MODEL_EXTRACTION`, `MODEL_NOTES` | `src/models.ts` | Per-role model, `model` or `model@thinking` |
+| `MODEL_READING`, `MODEL_EXTRACTION`, `MODEL_CURATOR` | `src/models.ts` | Per-role model, `model` or `model@thinking`: reading (library cards, enrichment, image descriptions), extraction (records), curator (the curator and now) |
 | `CONNECTORS` | none | `gmail`, `imessage`, `calendar`, `x`, `omp` |
 | `EXECUTOR_MCP_URL` | `http://127.0.0.1:4312/mcp` | Executor's MCP server |
 | `OMP_SESSIONS` | `~/.omp/agent/sessions` | omp session files |
-| `OMP_PROJECT_MEMORY` | | omp's per-project memory, for `context_get` |
-| `YTDLP_BIN`, `XURL_BIN`, `PYTHON_BIN` | `yt-dlp`, `xurl`, `python3` | Reader binaries |
-| `TF_PY` | | The rendering page reader |
+| `NOW_ROOTS`, `NOW_DESKS` | | Where now finds repos and desks |
+| `BRAIN_NOTIFY` | | The command that sends the Sunday message |
+| `YTDLP_BIN`, `XURL_BIN` | `yt-dlp`, `xurl` | Reader binaries |
+| `PAGE_READER` | | The rendering page reader |
 | `EVAL_QUESTIONS` | `$BRAIN_HOME/eval/memory-v2.json` | The weekly eval's question file |
 | `RESTIC_REPOSITORY`, `RESTIC_PASSWORD_FILE` | `$BRAIN_HOME/restic-password` | Backups |
 | `BACKUP_PATHS`, `BACKUP_HOST` | | More paths to back up; the snapshot's host name |
@@ -94,3 +102,23 @@ All in `$BRAIN_HOME/env`; [`env.example`](../env.example) has each one with a co
 | `BRAIN_CONTEXT`, `BRAIN_LOGS`, `MEMORY_MCP_HOME` | `$BRAIN_HOME/context`, `/logs`, `/memory-mcp` | Move the context repo, logs or token store |
 
 `PG_PORT` goes in the shell that runs `docker compose`.
+
+## Commands
+
+Put `bin/` on your `PATH` to type `nbrain`. `nbrain help` lists them:
+
+| Command | Does |
+|---|---|
+| `init [--name "Full Name"]` | Env file, folders, context repo, database and roles |
+| `doctor` | Checks the database, models, connectors, the server and the public door |
+| `connect <client>` | Gives a client a token and writes the brain into its config |
+| `token list \| add \| revoke` | Agent tokens and OAuth grants |
+| `mcp` | The stdio relay for clients that only start local commands |
+| `brief --task "…" [--project <name or dir>]` | A brief from memory-mcp, as `NBRAIN_TOKEN` or the token omp was given |
+| `save <url \| ->` | Saves a URL, or text from stdin, with `--why`, `--title`, `--project`; `--as research` keeps a research write-up |
+| `search <query>` | Searches, with `--source` and `--limit` |
+| `skill list \| show \| check` | Skills and styles |
+| `now [--dry-run]` | Writes `now.md` now, or only prints it |
+| `weekly [--send]` | Prints this week's Sunday message, or sends it |
+| `omp` | Reads new omp sessions now |
+| `eval [questions.json]` | The retrieval eval |

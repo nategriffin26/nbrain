@@ -1,6 +1,6 @@
-// The real network readers behind `hydrateBookmark`: outside pages through the research helper's TinyFish fetch (free, JS
-// rendering, PDFs, Wayback fallback; `tf.py` paces every caller on this Mac through one ledger), YouTube through yt-dlp (title,
-// description and the caption transcript), and images through a vision model on the omp gateway.
+// The real network readers behind `hydrateBookmark`: outside pages through a rendering page reader (PAGE_READER: JS
+// rendering, PDFs, an archive fallback, one pacing ledger for every caller on the machine), YouTube through yt-dlp (title,
+// description and the caption transcript), and images through a vision model on the model endpoint (LLM_URLS).
 import { execFile } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,11 +8,10 @@ import { join } from "node:path";
 import { complete } from "../models.js";
 import type { HydrateDeps, PageResult } from "./xhydrate.js";
 
-/** The rendering page reader (a script answering `fetch <urls> --json`); without TF_PY, linked pages are skipped. */
-const TF = process.env.TF_PY;
-const PYTHON = process.env.PYTHON_BIN ?? "python3";
+/** The rendering page reader: a command answering `read <urls> --json --lane <name> --max-wait <s> --max-chars 0` with
+ *  {results, errors, unretrieved} (nstack's `web`); without PAGE_READER, linked pages are skipped. */
+const READER = process.env.PAGE_READER;
 const YTDLP = process.env.YTDLP_BIN ?? "yt-dlp";
-const PAGE_STORE = `${process.env.BRAIN_HOME ?? `${process.env.HOME}/.brain`}/x-pages`;
 const YOUTUBE = /^https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch|shorts|live)|youtu\.be\/)/i;
 const IMAGE_BYTES = 4_500_000;
 
@@ -22,17 +21,17 @@ const run = (file: string, args: string[], options: { timeout: number; env?: Nod
 
 const transient = (reason: string, status?: number) => status === 429 || (status !== undefined && status >= 500) || /timeout|timed out|rate limit|unreachable|deferred|temporar|ECONN|network/i.test(reason);
 
-/** `tf.py fetch --json` prints the payload, then (when URLs were deferred) a retry notice; the payload ends at the first unindented `}`. */
-function tfPayload(stdout: string): { results?: { url?: string; final_url?: string; title?: string | null; text?: unknown }[]; errors?: { url?: string; error?: unknown; status?: number }[]; unretrieved?: string[] } | undefined {
+/** The reader's JSON payload, which ends at the first unindented `}` (a retry notice may follow it). */
+function readerPayload(stdout: string): { results?: { url?: string; final_url?: string; title?: string | null; text?: unknown }[]; errors?: { url?: string; error?: unknown; status?: number }[]; unretrieved?: string[] } | undefined {
   const end = stdout.indexOf("\n}");
   try { return JSON.parse(end < 0 ? stdout : stdout.slice(0, end + 2)); } catch { return undefined; }
 }
 
 async function readWeb(urls: string[]): Promise<Map<string, PageResult>> {
   const out = new Map<string, PageResult>();
-  if (!TF) { for (const url of urls) out.set(url, { error: "no page reader (TF_PY unset)", transient: false }); return out; }
-  const { stdout, stderr, code } = await run(PYTHON, [TF, "fetch", ...urls, "--json", "--lane", "XHydrate", "--max-wait", "300"], { timeout: 20 * 60_000, env: { ...process.env, TF_STORE: PAGE_STORE } });
-  const payload = tfPayload(stdout);
+  if (!READER) { for (const url of urls) out.set(url, { error: "no page reader (PAGE_READER unset)", transient: false }); return out; }
+  const { stdout, stderr, code } = await run(READER, ["read", ...urls, "--json", "--lane", "XHydrate", "--max-wait", "300", "--max-chars", "0"], { timeout: 20 * 60_000 });
+  const payload = readerPayload(stdout);
   if (payload === undefined) {
     const reason = `page reader failed (exit ${code}): ${stderr.trim().split("\n").pop()?.slice(0, 160) ?? ""}`;
     for (const url of urls) out.set(url, { error: reason, transient: true });

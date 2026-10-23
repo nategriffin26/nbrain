@@ -61,7 +61,7 @@ create table if not exists brain.model_roles (
 -- One row per raw thing: a text, a mail, a record, a calendar event, a bookmark, a chat turn, a note, a capture, a skill.
 -- id: `<source>:<external_id>` of the brain.events row it came from (or an id from an older store the brain was loaded
 -- from). One item per (source, ext_id): a later copy rewrites it in place.
--- source: imessage | gmail | x | calendar | chat | omp | saved | skill | record | memory | note | wiki (and home | dream from an older store)
+-- source: imessage | gmail | x | calendar | chat | omp | saved | research | skill | record | note | wiki (and home | dream from an older store)
 -- kind: message | post | event | record | fact | note | page | doc
 -- origin: event (from brain.events) | note (memory-mcp's remember) | skill (the skills index) | context (loaded from an older store; an event's copy wins over it)
 create table if not exists memory.items (
@@ -180,12 +180,9 @@ create table if not exists memory.extracted (
 	at timestamptz not null default now()
 );
 
--- What the assistant knows about the owner without searching (notes.ts): written by the consolidation pass (by = consolidation)
--- over chats, coding sessions, imported notes and the events the gate sent to the brief, or by a bot through `remember` (by = the bot).
--- kind: fact | preference | rule | decision | situation. subject: who or what it is about ("Alex", "Sam", "coding agents").
--- Latest wins: a note that changes another sets the old one's replaced_by; only current notes have an item (source 'memory',
--- id memory:<id>) in search. sources: the items it was read from. until: when a situation ends. A note is retired only for
--- what replaced it says or reverses: the rest of it stays current as its own note, with kept_from = the retired note.
+-- Retired (kept as history, read by nothing): notes a consolidation pass wrote over chats, sessions and texts, and the
+-- life profile rewritten from them. Audited stale and noisy (most of them), they gave way to the profile files in the
+-- context repo (curator.ts), which change only from the owner's own words and corrections.
 create table if not exists memory.notes (
 	id bigserial primary key,
 	kind text not null,
@@ -198,32 +195,91 @@ create table if not exists memory.notes (
 	replaced_by bigint references memory.notes(id),
 	created_at timestamptz not null default now()
 );
-create index if not exists notes_current on memory.notes (id) where replaced_by is null;
 alter table memory.notes add column if not exists kept_from bigint references memory.notes(id);
-
--- Items the consolidation pass has read, by the hash of what it read: a changed item is read again. Imported notes are
--- deleted once read (they live on as notes), and their rows stay so an import never brings them back. A note the
--- reconcile step has checked against its neighbours is here too, as memory:<note> with hash 'reconciled'.
 create table if not exists memory.consolidated (
 	item_id text primary key,
 	hash text not null
 );
-
--- The profile at the head of an assistant's turn: one row, rewritten from the current notes after they change.
 create table if not exists memory.profile (
 	id boolean primary key default true check (id),
 	text text not null,
 	written_at timestamptz not null
 );
 
+-- What the owner marked private (the `private` tool): an item id, or a whole thread as thread:<source>:<thread>. Search,
+-- briefs, the library and every derived layer leave it out; a life-scope search asking for private finds it. Deleting the
+-- row undoes it.
+create table if not exists memory.private (
+	target text primary key,
+	why text,
+	by text not null,
+	at timestamptz not null default now()
+);
+
+-- Corrections an agent passed on (the `correct` tool): what is wrong and what is right, about a record, card, item or
+-- profile change when known. The curator applies each within a minute (records.superseded_by = 'correction:<id>', a
+-- card rewritten, profile lines closed and added with this as their source); a line sourced to a correction changes only
+-- by a later correction.
+create table if not exists memory.corrections (
+	id bigserial primary key,
+	target text,
+	text text not null,
+	by text not null,
+	at timestamptz not null default now()
+);
+
+-- The library: one card per bookmark, saved page or post worth keeping (library/cards.ts). id card:<item_id>.
+-- kind: tool | technique | reference | idea | read | person. what: what it is, in a sentence. why: why it fits the owner
+-- (their projects, tastes, what they asked for). craft: for a reference, what is good about it in craft terms. url: the
+-- thing itself (a tool's site, the page a post points at) when that is not the item's url. status: new | tried | adopted |
+-- dropped, set by an agent that used it (library_mark). capture: files under $BRAIN_HOME (screenshot png, archive html,
+-- recording webm). hash: the item hash the card was written from; a changed item is carded again.
+create table if not exists memory.cards (
+	id text primary key,
+	item_id text not null unique references memory.items(id) on delete cascade,
+	kind text not null,
+	what text not null,
+	why text not null,
+	craft text,
+	projects text[] not null default '{}',
+	url text,
+	status text not null default 'new',
+	status_note text,
+	status_by text,
+	status_at timestamptz,
+	capture jsonb not null default '{}',
+	model text not null,
+	hash text not null,
+	at timestamptz not null,
+	created_at timestamptz not null default now(),
+	updated_at timestamptz not null default now()
+);
+create index if not exists cards_by_kind on memory.cards (kind, status);
+-- corrected: the fields a correction set, as {"what": "correction:<id>", …}; a later triage keeps those fields.
+alter table memory.cards add column if not exists corrected jsonb not null default '{}';
+-- Items the triage read and found nothing worth a card in, by hash: a changed item is read again.
+create table if not exists memory.uncarded (
+	item_id text primary key references memory.items(id) on delete cascade,
+	hash text not null,
+	at timestamptz not null default now()
+);
+
 -- memory-mcp's writer role, when it exists (`nbrain init` creates it with its password; memory_reader, the read-only role
--- memory_ro logs in through, is created and granted by records.ts prepareReader): memory_writer may only INSERT a note
--- (memory.items/chunks) or a capture (brain.events), so memory_query and remember can never reach anything else.
+-- memory_ro logs in through, is created and granted by records.ts prepareReader): memory_writer may INSERT a note
+-- (memory.items/chunks), a capture (brain.events) or a correction, mark and unmark private, and set a card's status, so
+-- sql, remember and the other writes can never reach anything else. It is never a member of memory_reader (that would
+-- let it read every table); an install that made it one has that taken back here.
 do $$ begin
 	if exists (select from pg_roles where rolname = 'memory_writer') then
 		grant usage on schema memory, brain to memory_writer;
-		grant insert on memory.items, memory.chunks, brain.events to memory_writer;
-		grant usage on sequence memory.chunks_id_seq to memory_writer;
+		grant insert on memory.items, memory.chunks, brain.events, memory.corrections to memory_writer;
+		grant usage on sequence memory.chunks_id_seq, memory.corrections_id_seq to memory_writer;
 		grant usage on all sequences in schema brain to memory_writer;
+		grant select, insert, delete on memory.private to memory_writer;
+		grant select (id), update (status, status_note, status_by, status_at, updated_at) on memory.cards to memory_writer;
+		if exists (select from pg_auth_members m join pg_roles r on r.oid = m.roleid join pg_roles w on w.oid = m.member
+				where r.rolname = 'memory_reader' and w.rolname = 'memory_writer') then
+			revoke memory_reader from memory_writer;
+		end if;
 	end if;
 end $$;

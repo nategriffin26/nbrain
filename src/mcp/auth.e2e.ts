@@ -57,16 +57,16 @@ async function rpc(bearer: string, method: string, params: Record<string, unknow
   return body.result;
 }
 const tools = await rpc(tokens.access_token, "tools/list");
-assert(tools.tools?.some(tool => tool.name === "memory_search"));
+assert(tools.tools?.some(tool => tool.name === "search"));
 console.log(`OAuth tools/list: 200, ${tools.tools!.length} work-scoped tools`);
-const search = await rpc(tokens.access_token, "tools/call", { name: "memory_search", arguments: { query: "nbrain", limit: 1 } });
+const search = await rpc(tokens.access_token, "tools/call", { name: "search", arguments: { query: "nbrain", limit: 1 } });
 assert(search.content?.some(part => typeof part.text === "string"));
-console.log("OAuth memory_search: 200, successful real database result (content not printed)");
+console.log("OAuth search: 200, successful real database result (content not printed)");
 await rpc(staticToken, "tools/list", {}, local);
 console.log("Static bearer tools/list: 200");
 await rpc(staticToken, "tools/list", {}, local, { "tailscale-funnel-request": "?1" });
 const entries = readFileSync(`${home}/logs/memory-mcp.log`, "utf8").trim().split("\n").map(line => JSON.parse(line) as { ip?: string; agent?: string; tool?: string });
-assert(entries.some(entry => entry.ip === `tailnet:${login}` && entry.agent === "oauth-door-check" && entry.tool === "memory_search"));
+assert(entries.some(entry => entry.ip === `tailnet:${login}` && entry.agent === "oauth-door-check" && entry.tool === "search"));
 const funnel401 = await fetch(`${local}/mcp`, { headers: { "tailscale-funnel-request": "?1" } });
 assert.equal(funnel401.status, 401);
 console.log(`Caller log: tailnet:${login}; Funnel boundary separately covered by unit test`);
