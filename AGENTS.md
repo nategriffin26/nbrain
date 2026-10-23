@@ -11,5 +11,7 @@
 - Never print secrets: tokens.json stores sha256 only; role passwords live in the env file or the Keychain.
 - Never kill processes by pattern: `pkill -f "tsx src/mcp/server.ts"` also matches the live server. Stop a test server
   by its PID or `lsof -tiTCP:<port> -sTCP:LISTEN`.
-- Never point tests at the owner's brain: use a throwaway `BRAIN_HOME` and database.
+- Never point tests at the owner's brain: use a throwaway `BRAIN_HOME`, and for the database tests a throwaway Postgres
+  cluster (roles are cluster-wide, and schema.sql grants and revokes them), e.g. the same image on another port with
+  `POSTGRES_DB=nbrain_t_gate`, then `TEST_DATABASE_URL=postgres://…/nbrain_t_gate`. Without it those tests skip.
 - Checks: `npx tsc --noEmit -p tsconfig.json`, `npx vitest run`.
