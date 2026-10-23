@@ -38,7 +38,7 @@ A line that stops being true is closed into `closed.md` with its reason, never d
 
 **Finding.** Set-level sufficiency checks reached 0.9075 Macro-F1 at judging whether retrieved passages can answer a question, against 0.6516 for mean-pooling ([SURE-RAG](https://arxiv.org/html/2605.03534v1)). Given the corruption result above, an agent handed weak hits as if they were answers is worse off than one told there are none.
 
-**Decision.** `search` marks each result strong or weak and says `nothing_strong` when no result is strong; the tool tells agents to say so instead of guessing. Strong is a per-result judgment, not a set-level one: the reranker must judge that the result answers the query, and it must fall in the query's dates and hold the names the query names. Look-alikes (one order's mails, one thread's messages) fold into one result. The brief takes only strong results.
+**Decision.** `search` marks each result strong or weak and says `nothing_strong` when no result is strong; the tool tells agents to say so instead of guessing. Strong is a per-result judgment, not a set-level one: the judge (Clef) must give the result at least 0.5 probability of answering the query, and it must fall in the query's dates and hold the names the query names. 0.5 is the yes/no boundary of Clef's probability, fixed before the eval, not fitted to it. Look-alikes (one order's mails, one thread's messages) fold into one result. The brief takes only strong results.
 
 ## The library and taste
 
@@ -123,7 +123,19 @@ Adapting weights per query recovered only a median 12.2% of the oracle headroom 
 - A newest-first channel when the query asks for the "latest" of something.
 - A channel for identifiers: words with digits that are at least five characters long.
 
-The 100 best results from each channel are fused by RRF with k = 60. Hits that match every filter the query names, or that contain a code it names, count triple. Each item gets one hit, its best chunk. A local Qwen3 cross-encoder reorders the top 30, using 500 characters per candidate, and keeps the fused rank as a 4:1 prior. If the reranker is down, search falls back to the fused order.
+The 100 best results from each channel are fused by RRF with k = 60. Hits that match every filter the query names, or that contain a code it names, count triple. Each item gets one hit, its best chunk. A judge reorders the top 30, reading 500 characters per candidate, and keeps the fused rank as a 4:1 prior. If the judge fails, search falls back to the fused order.
+
+The judge is Cloudflare's Clef on Workers AI, one call per search with a yes/no question per hit. On the recall eval (172 answerable questions, 19 with no answer), measured on one day against the local Qwen3-Reranker-0.6B it replaced:
+
+| Judge | Found, of 172 | No-answer questions called strong, of 19 | Real answers marked weak |
+|---|---|---|---|
+| Qwen3-Reranker-0.6B, local | 127 | 4 | 16 |
+| Clef | 124 | 2 | 21 |
+| None | 120 | | |
+
+Clef lost 3 questions and won none against the local model (p ≈ 0.25), and called fewer no-answer questions strong. With no judge, 101 answerable questions got nothing strong. Clef-flash was slower and worse than Clef. Clef's call took a median 1.0 s (p90 1.3 s).
+
+Embeddings stay on Ollama. Workers AI hosts the same Qwen3-Embedding-0.6B (cosine 0.9997 against the local vectors), but a hosted query embedding took a median 1.2 s (p90 4.2 s, 10 s at worst, and once over 15 s) against 0.09 s locally. Sending each query twice and taking the first answer cut that to a median 0.6 s (p90 2.0 s), yet through the live server searches still took 3.1-8.1 s (median 5.6 s), 1 of 8 ran without its embedding, and direct calls had 3.0 s and 12.2 s tails. Ollama already runs on the machine for other tools, so local embeddings add no load. If the embedding fails or takes over 6 s (reloading an idle model took 4.2 s), search runs without its meaning channel rather than failing. With local embeddings and the Clef judge, the recall eval found 125 of 172 and called 3 of 19 no-answer questions strong; the embedding took a median 37 ms (p90 48 ms), and one search, the first, ran without it while the model loaded.
 
 RRF was chosen because a fresh install has no judged queries, and RRF needs no calibration between BM25 and cosine scores. The ×3 weight and the 4:1 prior were set by hand and have not been tuned. Dated channels only boost results; they never filter them. Chunk text is kept verbatim, and embeddings are keyed by a hash of their input (`src/memory/schema.sql`), so changing the embedding model can be an online migration with dual writes ([omiid](https://omiid.me/notebook/64/embeddings-rot-too-running-pgvector-in-production)).
 
@@ -146,7 +158,7 @@ The matches come from memory search over each skill's full body, which `src/skil
 
 **Finding.** An LLM judge is a measuring instrument and has to be validated like one. In a study of 54 judges on 1,994 samples, correlation with humans was not enough on its own; the judges that passed reached Cohen's kappa of 0.781-0.816 ([Judge's Verdict](https://arxiv.org/html/2510.09738v1)). Memory rankings also flip as history grows. A budgeted memory that led at three weeks fell from 96% to 72% recall by nine weeks once early content was evicted ([Ground Truth First](https://arxiv.org/html/2607.21962v1)).
 
-**Decision.** `src/eval/recall.ts` runs each question in the owner's question file through search, just as `search` does for agents (all sources, reranked, ten results). A question passes only if every expected fact string appears in the rendered results. There is no LLM judge, so there is no judge to drift. Each miss is attributed to the stage that lost it: never reached a channel, ranked below the cut at a given fused rank, shown without the fact, or no gold item in memory. A fact no longer anywhere in memory marks its question stale, to be updated. The question set and its results stay in the owner's data directory. nbrain therefore ships no public benchmark, and the eval measures retrieval only, not choosing a skill, the quality of the curator's edits, or capture fidelity.
+**Decision.** `src/eval/recall.ts` runs each question in the owner's question file through search, just as `search` does for agents (all sources, judged, ten results). A question passes only if every expected fact string appears in the rendered results. No model grades the answers, so no grader can drift. Each miss is attributed to the stage that lost it: never reached a channel, ranked below the cut at a given fused rank, shown without the fact, or no gold item in memory. A fact no longer anywhere in memory marks its question stale, to be updated. The question set and its results stay in the owner's data directory. nbrain therefore ships no public benchmark, and the eval measures retrieval only, not choosing a skill, the quality of the curator's edits, or capture fidelity.
 
 ## What nbrain deliberately does not do
 
@@ -155,13 +167,13 @@ The matches come from memory search over each skill's full body, which `src/skil
 - **Decay memories over time.** No controlled evidence shows that Ebbinghaus-style decay ([MemoryBank](https://arxiv.org/pdf/2305.10250)) improves retrieval, and evicting old content is what broke long-horizon recall ([Ground Truth First](https://arxiv.org/html/2607.21962v1)). Recency is used only when a query asks for it.
 - **Rank by usage.** Reinforcing whatever gets retrieved creates a loop that cannot demote a bad note ([essay](https://swapnanilsaha.com/blog/recall-is-a-write-operation/); single source).
 - **Run an agentic search loop.** Agentic RAG cost 3.3× the input tokens, 1.9× the output tokens and 1.5× the time, and a fixed reranker was better at choosing the final documents ([arXiv 2601.07711](https://arxiv.org/pdf/2601.07711)). Search returns one ranked pass; the calling agent decides whether to search again.
-- **Use HyDE.** HyDE raised zero-shot Contriever's nDCG@10 on TREC DL19 from 44.5 to 61.3 ([ACL 2023](https://aclanthology.org/2023.acl-long.99.pdf)). Each query, though, costs a model call, and the gains concentrate where the dense retriever is weak. It is untested on top of BM25 plus a reranker.
+- **Use HyDE.** HyDE raised zero-shot Contriever's nDCG@10 on TREC DL19 from 44.5 to 61.3 ([ACL 2023](https://aclanthology.org/2023.acl-long.99.pdf)). Each query, though, costs a model call, and the gains concentrate where the dense retriever is weak. It is untested on top of BM25 plus a judge.
 - **Stuff context or install public skill packs.** Longer context degrades every model tested ([Chroma](https://www.trychroma.com/research/context-rot)). An audit of 3,984 public skills found 13.4% with a critical issue and 76 malicious payloads ([Snyk](https://snyk.io/blog/toxicskills-malicious-ai-agent-skills-clawhub/)).
 
 ## Open questions worth an experiment
 
-- **Tuned convex fusion.** Once an install has enough judged queries, fit α ([Bruch et al.](https://pinecone.io/research/an-analysis-of-fusion-functions-for-hybrid-retrieval/)) jointly with the 4:1 reranker prior, and compare against RRF on the recall eval.
-- **Rerank depth and input.** Reranking more than 30 candidates, sending more than 500 characters each, or using late interaction for long saved documents.
+- **Tuned convex fusion.** Once an install has enough judged queries, fit α ([Bruch et al.](https://pinecone.io/research/an-analysis-of-fusion-functions-for-hybrid-retrieval/)) jointly with the 4:1 judge prior, and compare against RRF on the recall eval.
+- **Judge depth and input.** Judging more than 30 candidates, sending more than 500 characters each, or using late interaction for long saved documents.
 - **HyDE on hard misses.** Running HyDE only on eval misses whose items never reached any channel, to see whether a hypothetical document recovers them.
 - **PDF and long-document capture.** Docling against unpdf on table-heavy PDFs; late chunking with a long-context embedder for long saves.
 - **Skill selection at scale.** As the library passes about 20 skills, measure how often the top three include the right skill. Test pseudo-query augmentation, which added +6.70 points of Recall@1 ([Skill2Query](https://arxiv.org/pdf/2608.16071)).

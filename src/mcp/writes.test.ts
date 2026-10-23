@@ -2,6 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LIBRARY_TOOLS } from "../library/mcp.js";
 import { freshDatabase, schemaSql } from "../testdb.js";
+import { embedding, fakeModels, restoreFetch } from "../testai.js";
 import { type Agent, type Call, ScopeError } from "./types.js";
 import { privateTarget, WRITE_TOOLS } from "./writes.js";
 
@@ -46,8 +47,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("memory_writer's grants", () => 
     await admin.query(await schemaSql());
     writer = new pg.Pool({ connectionString: db.url, options: "-c role=memory_writer" });
     reader = new pg.Pool({ connectionString: db.url, options: "-c role=memory_reader" });
+    fakeModels(({ body }) => embedding(body.text!));
   }, 60_000);
-  afterAll(async () => { await Promise.all([writer?.end(), reader?.end(), admin?.end()]); });
+  afterAll(async () => { restoreFetch(); await Promise.all([writer?.end(), reader?.end(), admin?.end()]); });
 
   it("bug: memory_writer inherited memory_reader and could read every item; it cannot, and every write works on its own grants", async () => {
     expect((await admin.query("SELECT pg_has_role('memory_writer', 'memory_reader', 'MEMBER') AS member, has_table_privilege('memory_writer', 'memory.items', 'SELECT') AS reads")).rows[0]).toEqual({ member: false, reads: false });

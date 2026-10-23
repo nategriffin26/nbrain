@@ -1,30 +1,33 @@
 // Search and read over memory, on Postgres.
 // search: explicit filters first (person, source, from/to), then channels over the eligible chunks:
 // - words: BM25 (ParadeDB) over heading ×2, people ×1.5, context, text, any of the query's meaningful words;
-// - meaning: cosine of the query's local embedding against the chunks' (pgvector HNSW);
+// - meaning: cosine of the query's embedding against the chunks' (pgvector HNSW);
 // - date: when the query names a day, week, month or "recently", chunks dated in it, or naming one of its days and dated
 //   within a year of it, by words or recency;
 // - person: when the query names someone, chunks of items they are on, by words or recency;
 // fused by reciprocal rank (k 60), one hit per item (its best chunk). A record stands for the item it was
-// read from (it repeats that item's words under a short title), so the item is found by either. The local cross-encoder
-// (Qwen3-Reranker, llama-server) reorders the first RERANK_TOP with the fused rank kept as a 4:1 prior. Dated channels are
-// ranking signals, never filters. A text is shown with its conversation (the messages just before and after it in its
-// thread), and a text already shown in another's conversation takes no slot of its own. Other hits quote the window of the
-// item where the most query words meet.
+// read from (it repeats that item's words under a short title), so the item is found by either. The judge (Clef, on
+// Workers AI) says how likely each of the first JUDGE_TOP is to answer the query and reorders them, the fused rank kept as
+// a 4:1 prior. Dated channels are ranking signals, never filters. A text is shown with its conversation (the messages just
+// before and after it in its thread), and a text already shown in another's conversation takes no slot of its own. Other
+// hits quote the window of the item where the most query words meet.
 // read: one item (or `<item>#<part>`) in pages of 8 KB, with the neighbouring messages of its thread.
 import type { Pool, PoolClient } from "pg";
+import * as z from "zod";
 import { ASSISTANT, OWNER, ZONE } from "../config.js";
+import { runModel, workersAiSet } from "../workers-ai.js";
 import { embed } from "./store.js";
 import { cleanText, type DateMention, dateMention, fold, foldHandle, quoteOf, queryWords } from "./text.js";
 
-/** `rerank: false` skips the cross-encoder (it costs ~0.7 s and moved one question in 172); search keeps it.
+/** `judge: false` skips the judge; search keeps it (on the recall eval it found 124 of 172 against 120 without, where
+ *  101 answerable questions got nothing strong).
  *  `trace` returns each stage's items (the eval, src/eval/recall.ts, says where a miss was lost). `private` lets in what
  *  the owner marked private (memory.private), left out otherwise. `cards`: only items with a library card that matches
  *  (memory.cards; project matches any of the card's projects). `exact`: the query word for word (case-insensitive) in an
  *  item's text or title, newest first, every match strong. */
-export interface SearchInput { query: string; person?: string; source?: string[]; from?: string; to?: string; limit?: number; rerank?: boolean; trace?: boolean; private?: boolean; exact?: boolean; cards?: { kind?: string; status?: string; project?: string } }
+export interface SearchInput { query: string; person?: string; source?: string[]; from?: string; to?: string; limit?: number; judge?: boolean; trace?: boolean; private?: boolean; exact?: boolean; cards?: { kind?: string; status?: string; project?: string } }
 /** `record`: what a record read from the item (type, when, status, ref), which search found it by. `strength`: strong when
- *  it answers the query (calibrated on the recall eval), weak when it only shares words or meaning. `folded`: the
+ *  the judge says it answers the query, weak when it only shares words or meaning. `folded`: the
  *  look-alikes folded into it (one order's mails, one thread's messages), oldest first, so the sequence that makes one
  *  value current survives the fold; `more` is their count. */
 export interface Result { id: string; chunk: string; title: string; url?: string; date: string; who: string; source: string; kind: string; context?: string; record?: string; quote: string; strength: "strong" | "weak"; more?: number; folded?: { id: string; date: string; title: string }[]; why: string }
@@ -33,10 +36,16 @@ export interface SearchResult { results: Result[]; nothing_strong?: true; person
 
 const RRF_K = 60;
 const CHANNEL_TOP = 100;
-/** How many fused hits the cross-encoder reorders: ~25 ms each on a laptop GPU, so 30 keep a search near half a second. */
-const RERANK_TOP = 30;
-const RERANK_PRIOR = 4;
-const RERANK_CHARS = 500;
+/** How many fused hits the judge reads, in one call (~1.2 s at p90). */
+const JUDGE_TOP = 30;
+const JUDGE_PRIOR = 4;
+const JUDGE_CHARS = 500;
+/** Clef answers in about 1.3 s at p90 (3.5 s at worst in 190); past this, search goes on without the judge. */
+const JUDGE_MS = 4000;
+/** Clef's answer is a probability that the hit answers the query; 0.5 is its yes/no boundary, fixed before the eval. */
+const JUDGE_STRONG = 0.5;
+const JUDGE_CRITERIA = { true: "it holds what the query asks for: the answer, or the very item the query is looking for", false: "it only shares words, people or topic with the query" };
+const Answers = z.object({ answers: z.record(z.string(), z.object({ noul: z.number() })) });
 const QUOTE_CHARS = 600;
 /** A text hit's conversation: the messages of its thread this many before and after it, within a day, each cut at TEXT_CHARS. */
 const BEFORE = 2;
@@ -96,10 +105,11 @@ export function sameOrder(a: { source: string; title: string; org: string | null
   return !!left && left === product(b.title);
 }
 
-export function strengthOf(score: number | undefined, inRange: boolean, exact: boolean, covered = true, threshold = 0.8, margin = 0, partial = false): Result["strength"] {
-  if (!inRange) return "weak";
-  if (score === undefined) return covered && exact ? "strong" : "weak";
-  return (covered && (score >= threshold || (exact && score >= 0.1) || (score >= 0.5 && margin >= 0.1))) || (partial && score >= Math.max(threshold, 0.99)) ? "strong" : "weak";
+/** Strong: in the query's dates, holding every name it names, and judged to answer it; a hit the judge did not read
+ *  must hold every word that matters instead. */
+export function strengthOf(score: number | undefined, inRange: boolean, exact: boolean, covered: boolean): Result["strength"] {
+  if (!inRange || !covered) return "weak";
+  return (score === undefined ? exact : score >= JUDGE_STRONG) ? "strong" : "weak";
 }
 
 export function containsTerm(text: string, term: string): boolean {
@@ -228,11 +238,16 @@ async function recordSources(pool: Pool, items: string[]): Promise<Map<string, R
   return new Map(rows.filter(row => row.chunk !== null).map(row => [row.record, { id: Number(row.chunk), item: row.item }]));
 }
 
-/** The cross-encoder's score for each document, by index. */
-async function rerank(query: string, documents: string[]): Promise<Map<number, number>> {
-  const response = await fetch(`${process.env.RERANK_URL}/v1/rerank`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query, documents }), signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
-  return new Map((await response.json() as { results: { index: number; relevance_score: number }[] }).results.map(each => [each.index, each.relevance_score]));
+/** The judge's probability that each document answers the query, by index: one Clef call for them all. */
+export async function judge(query: string, documents: readonly string[]): Promise<number[]> {
+  const state = { query, results: Object.fromEntries(documents.map((text, at) => [String(at + 1), text])) };
+  const questions = Object.fromEntries(documents.map((_, at) => [`r${at + 1}`, { type: "noul", instructions: `Does result ${at + 1} answer the query?`, criteria: JUDGE_CRITERIA }]));
+  const { answers } = await runModel("@cf/cloudflare/clef", { model: "clef", state, questions }, AbortSignal.timeout(JUDGE_MS), Answers);
+  return documents.map((_, at) => {
+    const answer = answers[`r${at + 1}`];
+    if (!answer) throw new Error(`clef: no answer for result ${at + 1}`);
+    return answer.noul;
+  });
 }
 
 export async function search(pool: Pool, input: SearchInput, now = new Date()): Promise<SearchResult> {
@@ -279,11 +294,16 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
       ? wordChannel(pool, words, where, local, condition, newest)
       : channel(pool, `SELECT c.id, c.item_id FROM memory.chunks c JOIN memory.items i ON i.id = c.item_id WHERE ${where}${condition} ORDER BY i.at DESC LIMIT ${CHANNEL_TOP}`, local.params);
   };
-  const meaning = async () => {
-    const [vector] = await embed([input.query], true);
+  // without the query's embedding (failed, or past its deadline) the other channels still answer
+  const meaning = async (): Promise<Ranked[]> => {
+    const vector = await embed([input.query], { query: true }).then(([each]) => each, (error: unknown) => {
+      console.warn(`${new Date().toISOString()} embed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    });
+    if (!vector) return [];
     const local = new Sql();
     local.params.push(...sql.params);
-    const v = local.add(`[${vector!.join(",")}]`);
+    const v = local.add(`[${vector.join(",")}]`);
     return channel(pool, `SELECT id, item_id FROM (SELECT c.id, c.item_id, c.embedding <=> ${v}::halfvec AS d FROM memory.chunks c JOIN memory.items i ON i.id = c.item_id WHERE ${where} ORDER BY d LIMIT ${CHANNEL_TOP}) x ORDER BY d`, local.params);
   };
   const pending: [string, Promise<Ranked[]>][] = [["words", wordChannel(pool, words, where, sql)], ["meaning", meaning()]];
@@ -328,9 +348,9 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   }
 
   const fusedOrder = input.trace ? order.map(each => each.item) : [];
-  // the reranked head, and room for the texts a conversation already shows
-  const details = await hitRows(pool, order.slice(0, Math.max(RERANK_TOP, limit * 2)).map(each => each.id));
-  const head = order.slice(0, RERANK_TOP);
+  // the judged head, and room for the texts a conversation already shows
+  const details = await hitRows(pool, order.slice(0, Math.max(JUDGE_TOP, limit * 2)).map(each => each.id));
+  const head = order.slice(0, JUDGE_TOP);
   const rows = [...details.values()];
   const records = rows.flatMap(row => best.get(row.item_id)?.record ?? []);
   const [talk, bodies] = await Promise.all([
@@ -347,36 +367,29 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
   const temporal = /^(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|dst|am|pm|central)$/i;
   const anchors = contentWords.filter(word => names.has(word) && !(date && temporal.test(word)));
   const relevance = new Map<number, number>();
-  const scores = input.rerank !== false && process.env.RERANK_URL && head.length > 1 ? await rerank(input.query, head.map(each => {
+  const scores = input.judge !== false && workersAiSet() && head.length > 1 ? await judge(input.query, head.map(each => {
     const row = details.get(each.id)!;
     const evidence = talk.get(row.item_id)?.map(line => `${line.who}: ${line.body}`).join("\n") ?? body.get(row.item_id) ?? row.text;
-    return `${row.title} · ${row.who} · ${row.at.toISOString().slice(0, 10)}\n${row.context.slice(0, 160)}\n${quoteOf(evidence, queryTerms, 300, row.start_at)}`.slice(0, RERANK_CHARS).toWellFormed();
-  })).catch((error: unknown) => { console.warn(`${new Date().toISOString()} reranker: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined;
+    return `${row.title} · ${row.who} · ${row.at.toISOString().slice(0, 10)}\n${row.context.slice(0, 160)}\n${quoteOf(evidence, queryTerms, 300, row.start_at)}`.slice(0, JUDGE_CHARS).toWellFormed();
+  })).catch((error: unknown) => { console.warn(`${new Date().toISOString()} judge: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined;
   if (scores) {
-    for (const [index, score] of scores) if (head[index]) relevance.set(head[index]!.id, score);
-    const reordered = head.map((each, index) => ({ each, prior: index + 1, score: scores.get(index) ?? 0 })).sort((a, b) => b.score - a.score)
-      .map((entry, rank) => ({ ...entry, fused: RERANK_PRIOR / (RRF_K + entry.prior) + 1 / (RRF_K + rank + 1) }))
+    for (const [index, score] of scores.entries()) relevance.set(head[index]!.id, score);
+    const reordered = head.map((each, index) => ({ each, prior: index + 1, score: scores[index]! })).sort((a, b) => b.score - a.score)
+      .map((entry, rank) => ({ ...entry, fused: JUDGE_PRIOR / (RRF_K + entry.prior) + 1 / (RRF_K + rank + 1) }))
       .sort((a, b) => b.fused - a.fused || a.prior - b.prior);
-    order = [...reordered.map(entry => entry.each), ...order.slice(RERANK_TOP)];
+    order = [...reordered.map(entry => entry.each), ...order.slice(JUDGE_TOP)];
   }
 
   const sets = Object.fromEntries(Object.entries(channels).map(([name, list]) => [name, new Set(list.map(each => standsFor.get(each.item)?.item ?? each.item))]));
   const inRange = (row: HitRow, text: string) => matchesDate(date, row.at, text) && (!input.from || row.at >= bound(input.from, false)) && (!input.to || row.at < bound(input.to, true));
   const candidates = order.filter(each => details.has(each.id)).map(each => details.get(each.id)!);
   const strengths = new Map<number, Result["strength"]>();
-  const scoreOrder = [...relevance.values()].sort((a, b) => b - a);
   for (const row of candidates) {
     const text = fold(`${row.title} ${row.who} ${row.context} ${body.get(row.item_id) ?? row.text} ${(talk.get(row.item_id) ?? []).map(line => line.body).join(" ")}`);
     const contains = (word: string) => containsTerm(text, word) || [...(person ?? []), ...named].some(each => queryWords([each.name, ...each.aliases, each.relationship ?? ""].join(" ")).includes(word) && fold(row.who).includes(fold(each.name)));
-    const missing = anchors.filter(word => !contains(word));
-    const covered = missing.length === 0;
-    const partial = anchors.length > 1 && missing.length === 1 && missing[0]!.length > 1 && !/\d/.test(missing[0]!);
+    const covered = anchors.every(contains);
     const exact = tokens.includes(row.item_id) || (contentWords.length > 0 && contentWords.every(contains));
-    const score = relevance.get(row.id);
-    const margin = score !== undefined && score === scoreOrder[0] ? score - (scoreOrder[1] ?? 0) : 0;
-    // Unstructured mail may be an advertisement for the right thing, not evidence that the owner bought it.
-    const threshold = row.source === "gmail" ? 0.99 : anchors.length ? 0.8 : 0.95;
-    strengths.set(row.id, strengthOf(score, inRange(row, text), exact, covered, threshold, margin, partial));
+    strengths.set(row.id, strengthOf(relevance.get(row.id), inRange(row, text), exact, covered));
   }
   const strong = (row: HitRow) => strengths.get(row.id)!;
   candidates.sort((a, b) => Number(strong(b) === "strong") - Number(strong(a) === "strong"));

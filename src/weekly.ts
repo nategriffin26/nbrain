@@ -9,8 +9,11 @@ import { NOT_PRIVATE } from "./curator.js";
 import { cursorOk, readCursor } from "./events/store.js";
 import { CARD_SOURCES } from "./library/cards.js";
 import { libraryDigest } from "./library/digest.js";
+import { judge } from "./memory/search.js";
+import { embed } from "./memory/store.js";
 import { notify } from "./notify.js";
 import { localTime } from "./time.js";
+import { workersAiSet } from "./workers-ai.js";
 
 const DAY = 86_400_000;
 const CURSOR = "weekly";
@@ -46,23 +49,31 @@ export async function recallLine(): Promise<string | undefined> {
   return `- Recall: ${latest.summary.ok} of ${latest.summary.n} found on ${shortDay(latest.at)}${before ? `, ${before.summary.ok} of ${before.summary.n} the week before` : ""}.${abstain ? ` ${abstain.ok} of ${abstain.n} questions with no answer got nothing strong.` : ""}`;
 }
 
-/** One tiny rerank call: without the reranker search still answers, on fused rank alone, and nothing else says so. */
-export async function rerankerLine(): Promise<string> {
-  const url = process.env.RERANK_URL;
-  if (!url) return "- No reranker set (RERANK_URL): search is running without it.";
-  try {
-    const response = await fetch(`${url}/v1/rerank`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: "checkup", documents: ["checkup"] }), signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`${response.status} ${(await response.text()).slice(0, 80)}`);
-    // search reads one score per document: an answer without them reorders nothing
-    const { results } = await response.json() as { results?: unknown[] };
-    if (!results?.length) throw new Error("no scores");
-    return "- Reranker answered.";
-  } catch (error) {
-    // fetch hides why behind "fetch failed": the cause says refused, unknown host or bad port
-    const cause = error instanceof Error ? error.cause as { code?: string; message?: string } | undefined : undefined;
-    const why = cause?.code ?? cause?.message ?? (error instanceof Error ? error.message : String(error));
-    return `- Reranker did not answer (${why}): search is running without it.`;
-  }
+/** Why search's two models failed a one-line call, nothing when they answered: the judge on Workers AI (not set is a
+ *  failure too), the embeddings on Ollama. */
+export async function modelsCheck(): Promise<{ judge?: string; embeddings?: string }> {
+  const why = (error: unknown): string => {
+    // fetch hides why behind "fetch failed": its cause says refused, unknown host or bad port
+    const cause = error instanceof Error ? error.cause : undefined;
+    const detail = cause instanceof Error ? "code" in cause && typeof cause.code === "string" ? cause.code : cause.message : undefined;
+    return (detail ?? (error instanceof Error ? error.message : String(error))).slice(0, 120);
+  };
+  const [judged, embedded] = await Promise.all([
+    workersAiSet() ? judge("checkup", ["checkup"]).then(() => undefined, why) : "CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN not set",
+    embed(["checkup"]).then(() => undefined, why),
+  ]);
+  return { ...(judged ? { judge: judged } : {}), ...(embedded ? { embeddings: embedded } : {}) };
+}
+
+/** Without the judge search still answers, on fused rank alone, and nothing else says so; without embeddings search and
+ *  the brief run without meaning, and nothing new is indexed. */
+export async function modelsLine(): Promise<string> {
+  const failed = await modelsCheck();
+  if (!failed.judge && !failed.embeddings) return "- Search judge and embeddings answered.";
+  return [
+    ...(failed.judge ? [`- Search judge did not answer (${failed.judge}): search is running without it.`] : []),
+    ...(failed.embeddings ? [`- Ollama's embeddings did not answer (${failed.embeddings}): search is running without meaning, and nothing new is indexed.`] : []),
+  ].join("\n");
 }
 
 /** The week's message, as the owner reads it. */
@@ -80,7 +91,7 @@ export async function weeklyMessage(pool: Pool, now = new Date()): Promise<strin
   const { rows: [backlog] } = await pool.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM memory.items i WHERE i.source = ANY($1) AND ${NOT_PRIVATE}
        AND NOT EXISTS (SELECT 1 FROM memory.cards c WHERE c.item_id = i.id) AND NOT EXISTS (SELECT 1 FROM memory.uncarded u WHERE u.item_id = i.id)`, [CARD_SOURCES]);
-  const [score, reranker] = await Promise.all([recallLine(), rerankerLine()]);
+  const [score, models] = await Promise.all([recallLine(), modelsLine()]);
   return [
     `Your brain this week, ${shortDay(now.getTime())}`,
     ["Profile changes", ...(changes.length ? [...changes, `To take one back, tell ${ASSISTANT} "undo <id>".`] : ["None this week."])].join("\n"),
@@ -88,7 +99,7 @@ export async function weeklyMessage(pool: Pool, now = new Date()): Promise<strin
     ["Checkup",
       ...(score ? [score] : []),
       stale.length ? `- Connectors behind: ${stale.join("; ")}.` : "- Every connector read in the last day.",
-      reranker,
+      models,
       ...(backlog!.n ? [`- ${backlog!.n} bookmarks and saves still to card.`] : []),
     ].join("\n"),
   ].join("\n\n");

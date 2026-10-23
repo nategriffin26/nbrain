@@ -8,6 +8,7 @@ import { triageCards } from "./library/cards.js";
 import { chain } from "./memory/records.js";
 import { writeItems } from "./memory/store.js";
 import { chunkBody, sha256 } from "./memory/text.js";
+import { embedding, fakeModels, restoreFetch } from "./testai.js";
 import { freshDatabase } from "./testdb.js";
 
 vi.hoisted(() => { process.env.BRAIN_CONTEXT = "/tmp/nbrain-fixes/context-curator"; });
@@ -111,8 +112,8 @@ it("bug: undoing A → B after B → C brought A back beside C; that undo is ref
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("on a throwaway database", () => {
   let pool: pg.Pool;
-  beforeAll(async () => { ({ pool } = await freshDatabase("curator")); }, 60_000);
-  afterAll(async () => { await pool?.end(); });
+  beforeAll(async () => { ({ pool } = await freshDatabase("curator")); fakeModels(({ body }) => embedding(body.text!)); }, 60_000);
+  afterAll(async () => { restoreFetch(); await pool?.end(); });
   const item = (id: string, source: string, thread: string | null, body: string) => pool.query(
     "INSERT INTO memory.items (id, source, kind, ext_id, thread, title, at, body, hash, origin) VALUES ($1, $2, 'message', $1, $3, '', now(), $4, $1, 'event')", [id, source, thread, body]);
   const correction = async (target: string | null, text: string) => (await pool.query<{ id: string }>("INSERT INTO memory.corrections (target, text, by) VALUES ($1, $2, 'omp') RETURNING id::text", [target, text])).rows[0]!.id;

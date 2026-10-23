@@ -3,7 +3,7 @@ import type { Result, SearchInput } from "../memory/search.js";
 import { freshDatabase } from "../testdb.js";
 import { findCards } from "./cards.js";
 
-// Search needs the embedder and reranker, which do not run here: it is faked over a fixed set of items, honouring the
+// Search needs Ollama and Workers AI, which do not run here: it is faked over a fixed set of items, honouring the
 // source list and the cards filter the way the real one does. Cards and the card lookup are the real tables.
 // rawStrength: the strength the item has in a search without the cards filter, where the result set differs
 const items: Record<string, { source: string; strength: Result["strength"]; rawStrength?: Result["strength"]; carded: boolean }> = {

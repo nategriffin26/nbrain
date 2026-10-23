@@ -1,7 +1,11 @@
 #!/bin/bash
-# The nbrain CLI (src/cli.ts) with $BRAIN_HOME/env loaded. Put this directory on PATH, or symlink this file.
+# The nbrain CLI (src/cli.ts) with $BRAIN_HOME/env loaded, and with KEYCHAIN_PREFIX set the Workers AI token from the login
+# Keychain when the env file does not hold it. Put this directory on PATH, or symlink this file.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 export BRAIN_HOME="${BRAIN_HOME:-$HOME/.brain}"
 if [ -f "$BRAIN_HOME/env" ]; then set -a; source "$BRAIN_HOME/env"; set +a; fi
+if [ -n "${KEYCHAIN_PREFIX:-}" ] && [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  export CLOUDFLARE_API_TOKEN="$(/usr/bin/security find-generic-password -s "$KEYCHAIN_PREFIX-cf-ai" -w 2>/dev/null || true)"
+fi
 exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/cli.ts" "$@"

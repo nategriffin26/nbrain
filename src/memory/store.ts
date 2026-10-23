@@ -1,29 +1,60 @@
 // Writes raw things into memory: an item verbatim, its people, and its chunks with their local embeddings.
-// Embeddings come from Ollama's Qwen3-Embedding-0.6B at its full 1024 dimensions (nothing leaves the machine).
+// Embeddings come from Ollama's Qwen3-Embedding-0.6B at its full 1024 dimensions, on this machine.
 import type { Pool } from "pg";
+import * as z from "zod";
 import { OWNER } from "../config.js";
 import { chunkBody, cleanText, sha256 } from "./text.js";
 
 export const EMBED_MODEL = "qwen3-embedding:0.6b";
 const EMBED_BATCH = 16;
+/** Two batches in flight keep Ollama's runner fed: on short texts that is 58 chunks/s against 24 one batch at a time. */
+const IN_FLIGHT = 2;
 /** The most one embedding input carries. */
 const EMBED_CHARS = 2000;
 const QUERY_INSTRUCTION = `Instruct: Given a question ${OWNER.name} asks about ${OWNER.their} own texts, emails, saved posts, records, calendar and chats, find the ones that answer it\nQuery: `;
+const Embeddings = z.object({ embeddings: z.array(z.array(z.number())) });
+/** An urgent embedding's deadline, every batch together: a warm query takes ~0.09 s, but Ollama unloads an idle model and
+ *  loading it again took 4.2 s. A search or brief goes on without it past this. */
+const URGENT_MS = 6000;
 
-/** Unit vectors for `texts` (queries get the retrieval instruction). Two batches in flight keep Ollama's runner fed: on short texts that is 58 chunks/s against 24 one batch at a time. */
-export async function embed(texts: readonly string[], query = false): Promise<number[][]> {
+/** Unit vectors for `texts`. A `query` gets the retrieval instruction and is `urgent`: someone waits on it, so it has a
+ *  deadline. */
+export async function embed(texts: readonly string[], { query = false, urgent = query }: { query?: boolean; urgent?: boolean } = {}): Promise<number[][]> {
+  const inputs = texts.map(text => `${query ? QUERY_INSTRUCTION : ""}${text.slice(0, EMBED_CHARS)}`);
+  const batches = Array.from({ length: Math.ceil(inputs.length / EMBED_BATCH) }, (_, at) => at * EMBED_BATCH);
+  // one call's requests end together: at the first failure no worker takes another batch, what is in flight is aborted,
+  // and the call rejects once every worker has stopped
+  const stop = new AbortController();
+  const ended = urgent ? AbortSignal.any([stop.signal, AbortSignal.timeout(URGENT_MS)]) : stop.signal;
+  let failure: { error: unknown } | undefined;
   const out: number[][] = [];
-  const starts = Array.from({ length: Math.ceil(texts.length / EMBED_BATCH) }, (_, at) => at * EMBED_BATCH);
   const worker = async () => {
-    for (let start = starts.shift(); start !== undefined; start = starts.shift()) {
-      const input = texts.slice(start, start + EMBED_BATCH).map(text => `${query ? QUERY_INSTRUCTION : ""}${text.slice(0, EMBED_CHARS)}`);
-      const response = await fetch(`${process.env.OLLAMA_URL ?? "http://127.0.0.1:11434"}/api/embed`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: EMBED_MODEL, input, dimensions: 1024, truncate: true }) });
-      if (!response.ok) throw new Error(`Ollama embed: ${response.status} ${await response.text()}`);
-      (await response.json() as { embeddings: number[][] }).embeddings.forEach((vector, at) => { out[start + at] = vector; });
+    while (!stop.signal.aborted) {
+      const start = batches.shift();
+      if (start === undefined) return;
+      const input = inputs.slice(start, start + EMBED_BATCH);
+      try {
+        const response = await fetch(`${process.env.OLLAMA_URL ?? "http://127.0.0.1:11434"}/api/embed`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: EMBED_MODEL, input, dimensions: 1024, truncate: true }), signal: ended,
+        });
+        if (!response.ok) throw new Error(`Ollama embed: ${response.status} ${(await response.text()).slice(0, 200)}`);
+        const { embeddings } = Embeddings.parse(await response.json());
+        if (embeddings.length !== input.length) throw new Error(`Ollama embed: ${embeddings.length} vectors for ${input.length} texts`);
+        embeddings.forEach((vector, at) => { out[start + at] = unit(vector); });
+      } catch (error) {
+        if (!failure) { failure = { error }; stop.abort(); }
+        return;
+      }
     }
   };
-  await Promise.all([worker(), worker()]);
+  await Promise.all(Array.from({ length: IN_FLIGHT }, worker));
+  if (failure) throw failure.error;
   return out;
+}
+
+function unit(vector: number[]): number[] {
+  const length = Math.hypot(...vector);
+  return vector.map(value => value / length);
 }
 
 export interface ItemInput {

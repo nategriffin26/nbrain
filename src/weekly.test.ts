@@ -1,11 +1,9 @@
-import { once } from "node:events";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import { readCursor } from "./events/store.js";
+import { clef, embedding, fakeModels, notPulled, refused, restoreFetch, serverError } from "./testai.js";
 import { freshDatabase } from "./testdb.js";
-import { recallLine, rerankerLine, weeklyTick } from "./weekly.js";
+import { modelsLine, recallLine, weeklyTick } from "./weekly.js";
 
 vi.hoisted(() => {
   process.env.BRAIN_HOME = "/tmp/nbrain-fixes/home-weekly";
@@ -13,35 +11,26 @@ vi.hoisted(() => {
   delete process.env.BRAIN_NOTIFY;
 });
 
-afterEach(() => { delete process.env.RERANK_URL; });
+afterEach(restoreFetch);
 
-/** A reranker on a free port answering every call with `status` and `body`. */
-async function reranker(status: number, body: unknown): Promise<Server> {
-  const server = createServer((_request, response) => { response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)); });
-  await once(server.listen(0, "127.0.0.1"), "listening");
-  process.env.RERANK_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return server;
-}
+const unit = Array.from({ length: 1024 }, (_, dim) => dim === 0 ? 1 : 0);
 
-async function stop(server: Server): Promise<void> {
-  server.closeAllConnections();
-  await once(server.close(), "close");
-}
-
-it("bug: a dead reranker went unnoticed (search quietly falls back to fused rank); the checkup says so", async () => {
-  let server = await reranker(200, { results: [{ index: 0, relevance_score: 0.5 }] });
-  expect(await rerankerLine()).toBe("- Reranker answered.");
-  await stop(server);
-  server = await reranker(503, { error: "loading model" });
-  expect(await rerankerLine()).toMatch(/^- Reranker did not answer \(503 .*\): search is running without it\.$/);
-  await stop(server);
-  server = await reranker(200, { results: [] });
-  expect(await rerankerLine()).toBe("- Reranker did not answer (no scores): search is running without it.");
-  await stop(server);
-  // nothing listens on the port any more
-  expect(await rerankerLine()).toBe("- Reranker did not answer (ECONNREFUSED): search is running without it.");
-  delete process.env.RERANK_URL;
-  expect(await rerankerLine()).toBe("- No reranker set (RERANK_URL): search is running without it.");
+it("bug: a dead judge went unnoticed (search quietly falls back to fused rank), and so would dead embeddings; the checkup says which", async () => {
+  fakeModels(({ model, body }) => model === "@cf/cloudflare/clef" ? clef({ r1: 0.2 }) : embedding(body.text!, () => unit));
+  expect(await modelsLine()).toBe("- Search judge and embeddings answered.");
+  fakeModels(({ model, body }) => model === "@cf/cloudflare/clef" ? [500, serverError] : embedding(body.text!, () => unit));
+  expect(await modelsLine()).toMatch(/^- Search judge did not answer \(@cf\/cloudflare\/clef 500 .*\): search is running without it\.$/);
+  // an answer without the asked-for probability judges nothing
+  fakeModels(({ model, body }) => model === "@cf/cloudflare/clef" ? clef({}) : embedding(body.text!, () => unit));
+  expect(await modelsLine()).toBe("- Search judge did not answer (clef: no answer for result 1): search is running without it.");
+  fakeModels(({ model }) => model === "@cf/cloudflare/clef" ? clef({ r1: 0.2 }) : notPulled);
+  expect(await modelsLine()).toMatch(/^- Ollama's embeddings did not answer \(Ollama embed: 404 .*\): search is running without meaning, and nothing new is indexed\.$/);
+  fakeModels(({ model }) => model === "@cf/cloudflare/clef" ? clef({ r1: 0.2 }) : refused);
+  expect(await modelsLine()).toBe("- Ollama's embeddings did not answer (ECONNREFUSED): search is running without meaning, and nothing new is indexed.");
+  restoreFetch();
+  fakeModels(({ body }) => embedding(body.text!, () => unit));
+  delete process.env.CLOUDFLARE_ACCOUNT_ID;
+  expect(await modelsLine()).toBe("- Search judge did not answer (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN not set): search is running without it.");
 });
 
 it("bug: the score line had no place for questions with no answer; it gives both numbers, and only recall for older runs", async () => {

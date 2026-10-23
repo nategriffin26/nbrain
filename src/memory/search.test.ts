@@ -1,9 +1,10 @@
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import { containsTerm, currentSql, foldKey, matchesDate, read as readItem, renderResults, sameOrder, search, strengthOf, visibleSql } from "./search.js";
+import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { containsTerm, currentSql, foldKey, matchesDate, read as readItem, renderResults, sameOrder, search, type SearchResult, strengthOf, visibleSql } from "./search.js";
 import pg from "pg";
 import { dateMention } from "./text.js";
 import { changes } from "./changes.js";
 import { freshDatabase } from "../testdb.js";
+import { type Call, clef, embedding, fakeModels, refused, restoreFetch, serverError } from "../testai.js";
 
 const row = { item_id: "mail:a", source: "gmail", thread: "thread-a", same_as: null, org: null, ref: null };
 describe("look-alikes", () => {
@@ -28,26 +29,21 @@ describe("look-alikes", () => {
     expect(sameOrder(first, { ...first, title: 'Delivered: "Desk chair..."' })).toBe(false);
   });
 });
-it("does not call a low-score or out-of-date answer strong", () => {
-  expect(strengthOf(0, true, false)).toBe("weak");
-  expect(strengthOf(1, true, false)).toBe("strong");
-  expect(strengthOf(0.79999, true, false)).toBe("weak");
-  expect(strengthOf(0.8, true, false)).toBe("strong");
-  expect(strengthOf(0.80001, true, false)).toBe("strong");
-  expect(strengthOf(1, true, true, false)).toBe("weak");
-  expect(strengthOf(0.98999, true, false, true, 0.99)).toBe("weak");
-  expect(strengthOf(0.99, true, false, true, 0.99)).toBe("strong");
-  expect(strengthOf(1, false, true)).toBe("weak");
-  expect(strengthOf(undefined, true, false)).toBe("weak");
-  expect(strengthOf(undefined, true, true)).toBe("strong");
+it("bug: a hit the judge gives even odds or better stayed weak under the cross-encoder's 0.8 bar; from 0.5 it is strong", () => {
+  expect(strengthOf(0.49999, true, false, true)).toBe("weak");
+  expect(strengthOf(0.5, true, false, true)).toBe("strong");
+  expect(strengthOf(0.50001, true, false, true)).toBe("strong");
 });
-it("accepts decisive or exact evidence without treating a close-score or wrong-subject hit as strong", () => {
-  expect(strengthOf(0.6, true, false, true, 0.99, 0.2)).toBe("strong");
-  expect(strengthOf(0.6, true, false, true, 0.99, 0.09)).toBe("weak");
-  expect(strengthOf(0.6, true, false, false, 0.99, 0.2)).toBe("weak");
-  expect(strengthOf(0.2, true, true, true, 0.99)).toBe("strong");
-  expect(strengthOf(0.995, true, false, false, 0.99, 0, true)).toBe("strong");
-  expect(strengthOf(1, false, true, true, 0.99, 0.5, true)).toBe("weak");
+it("a judged hit outside the query's dates or without a name it names is weak however sure the judge is, and holding every word does not lift a low score", () => {
+  expect(strengthOf(1, false, true, true)).toBe("weak");
+  expect(strengthOf(1, true, true, false)).toBe("weak");
+  expect(strengthOf(0.1, true, true, true)).toBe("weak");
+});
+it("with no judge, a hit is strong only in range, covered and holding every word that matters", () => {
+  expect(strengthOf(undefined, true, true, true)).toBe("strong");
+  expect(strengthOf(undefined, true, false, true)).toBe("weak");
+  expect(strengthOf(undefined, false, true, true)).toBe("weak");
+  expect(strengthOf(undefined, true, true, false)).toBe("weak");
 });
 it("does not ground a model identifier in an unrelated substring", () => {
   expect(containsTerm("Model Y is an example", "x")).toBe(false);
@@ -155,7 +151,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("literal search and folded histo
 
   it("matches percent, underscore, backslash and regex characters only literally in body or title", async () => {
     for (const query of ["50%_off", "[a+b].\\done", "%", "_", "\\", "[a+b]"]) {
-      const result = await search(pool, { query, exact: true, rerank: false });
+      const result = await search(pool, { query, exact: true });
       expect(result.results.map(hit => hit.id)).toEqual(["title-only", "literal"]);
       expect(result.results.every(hit => hit.strength === "strong")).toBe(true);
       expect(result.nothing_strong).toBeUndefined();
@@ -163,22 +159,22 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("literal search and folded histo
   });
 
   it("keeps the entire exact phrase and explicit person, source and inclusive day filters", async () => {
-    const result = await search(pool, { query: "CERULEAN HINGE", exact: true, person: "Casey Example", source: ["note"], from: "2026-01-02", to: "2026-01-02", rerank: false });
+    const result = await search(pool, { query: "CERULEAN HINGE", exact: true, person: "Casey Example", source: ["note"], from: "2026-01-02", to: "2026-01-02" });
     expect(result.results.map(hit => hit.id)).toEqual(["phrase-new"]);
     expect(result.person).toEqual([{ id: "person:casey", name: "Casey Example" }]);
-    expect((await search(pool, { query: "cerulean hinge", exact: true, person: "Casey Example", source: ["note"], rerank: false })).results.map(hit => hit.id)).toEqual(["window", "phrase-new"]);
-    const visible = await search(pool, { query: "cerulean hinge", exact: true, from: "2026-01-02", to: "2026-01-02", rerank: false });
+    expect((await search(pool, { query: "cerulean hinge", exact: true, person: "Casey Example", source: ["note"] })).results.map(hit => hit.id)).toEqual(["window", "phrase-new"]);
+    const visible = await search(pool, { query: "cerulean hinge", exact: true, from: "2026-01-02", to: "2026-01-02" });
     expect(visible.results.map(hit => hit.id)).toEqual(["wrong-source", "text-two", "phrase-new"]);
     expect(visible.results.find(hit => hit.id === "text-two")?.folded).toBeUndefined();
     expect(visible.results.find(hit => hit.id === "text-two")?.quote).toContain("cerulean hinge ready");
-    const privateResult = await search(pool, { query: "cerulean hinge", exact: true, source: ["note"], from: "2026-01-02", to: "2026-01-02", private: true, rerank: false });
+    const privateResult = await search(pool, { query: "cerulean hinge", exact: true, source: ["note"], from: "2026-01-02", to: "2026-01-02", private: true });
     expect(privateResult.results.map(hit => hit.id)).toEqual(["private-item", "phrase-new"]);
-    expect((await search(pool, { query: "cerulean hinge", exact: true, person: "Nobody Here", rerank: false })).nothing_strong).toBe(true);
-    expect((await search(pool, { query: "cerulean hinge 123456", exact: true, rerank: false })).results.map(hit => hit.id)).toEqual(["code"]);
+    expect((await search(pool, { query: "cerulean hinge", exact: true, person: "Nobody Here" })).nothing_strong).toBe(true);
+    expect((await search(pool, { query: "cerulean hinge 123456", exact: true })).results.map(hit => hit.id)).toEqual(["code"]);
   });
 
   it("shows folded mail history oldest first including the displayed item and renders each id", async () => {
-    const result = await search(pool, { query: "copper lantern", exact: true, source: ["gmail"], rerank: false });
+    const result = await search(pool, { query: "copper lantern", exact: true, source: ["gmail"] });
     const hit = result.results[0]!;
     expect(result.results).toHaveLength(1);
     expect(hit.id).toBe("mail-delivered");
@@ -196,26 +192,72 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("literal search and folded histo
   });
 
   it("quotes the first literal match rather than a later denser window and abstains only on no match", async () => {
-    const result = await search(pool, { query: "cerulean hinge", exact: true, source: ["note"], rerank: false });
+    const result = await search(pool, { query: "cerulean hinge", exact: true, source: ["note"] });
     expect(result.results.map(hit => hit.id)).toEqual(["window", "phrase-new", "phrase-old"]);
     expect(result.results[0]!.quote).toContain("FIRST cerulean hinge");
     expect(result.results[0]!.quote).not.toContain("SECOND");
-    expect(await search(pool, { query: "nonexistent-phrase-%_[x]", exact: true, rerank: false })).toMatchObject({ results: [], nothing_strong: true });
+    expect(await search(pool, { query: "nonexistent-phrase-%_[x]", exact: true })).toMatchObject({ results: [], nothing_strong: true });
   });
 
-  it("finds unchunked items with embedding and reranking unavailable", async () => {
+  it("finds unchunked items with the models down", async () => {
     await pool.query(`INSERT INTO memory.items(id,source,kind,at,title,body,hash,origin)
       VALUES ('unchunked','note','note','2026-01-06','Waiting to index','raw literal evidence','fixture','event')`);
-    const { OLLAMA_URL, RERANK_URL } = process.env;
-    process.env.OLLAMA_URL = "http://127.0.0.1:1";
-    process.env.RERANK_URL = "http://127.0.0.1:1";
+    fakeModels(() => refused);
     try {
       const result = await search(pool, { query: "raw literal evidence", exact: true });
       expect(result.results.map(hit => hit.id)).toEqual(["unchunked"]);
       expect(result.results[0]).toMatchObject({ quote: "raw literal evidence", strength: "strong" });
     } finally {
-      if (OLLAMA_URL === undefined) delete process.env.OLLAMA_URL; else process.env.OLLAMA_URL = OLLAMA_URL;
-      if (RERANK_URL === undefined) delete process.env.RERANK_URL; else process.env.RERANK_URL = RERANK_URL;
+      restoreFetch();
+      await pool.query("DELETE FROM memory.items WHERE id = 'unchunked'");
+    }
+  });
+
+  const strengths = (result: SearchResult) => Object.fromEntries(result.results.map(hit => [hit.id, hit.strength]));
+  const vectors = (call: Call) => embedding(call.body.text!, () => Array<number>(1024).fill(0.01));
+
+  it("bug: a failing judge (Workers AI 500) must not fail the search: it logs and falls back to holding every word", async () => {
+    fakeModels(call => call.model === "@cf/cloudflare/clef" ? [500, serverError] : vectors(call));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const result = await search(pool, { query: "cerulean metal hinge", limit: 30 });
+      expect(warn.mock.calls.map(call => String(call[0])).join("\n")).toMatch(/judge: @cf\/cloudflare\/clef 500/);
+      expect(strengths(result)).toMatchObject({ "phrase-split": "strong", "phrase-new": "weak", window: "weak" });
+    } finally {
+      warn.mockRestore();
+      restoreFetch();
+    }
+  });
+
+  it("bug: a failed query embedding (Ollama down) failed the whole search; it logs and searches without the meaning channel", async () => {
+    fakeModels(call => call.model === "@cf/cloudflare/clef" ? clef(Object.fromEntries(Object.keys(call.body.state!.results).map(n => [`r${n}`, 0.9]))) : refused);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const result = await search(pool, { query: "cerulean metal hinge", limit: 30 });
+      expect(warn.mock.calls.map(call => String(call[0])).join("\n")).toMatch(/embed: fetch failed/);
+      expect(result.channels.meaning).toBe(0);
+      expect(strengths(result)).toMatchObject({ "phrase-split": "strong" });
+    } finally {
+      warn.mockRestore();
+      restoreFetch();
+    }
+  });
+
+  it("each hit the judge saw is strong by its own answer, from 0.5, whatever words it holds", async () => {
+    const asked: string[] = [];
+    fakeModels(call => {
+      if (call.model !== "@cf/cloudflare/clef") return vectors(call);
+      asked.push(call.body.state!.query);
+      return clef(Object.fromEntries(Object.entries(call.body.state!.results).map(([n, text]) => [`r${n}`, text.includes("cerulean metal hinge") ? 0.5 : 0.49])));
+    });
+    try {
+      const result = await search(pool, { query: "cerulean hinge", limit: 30 });
+      expect(asked).toEqual(["cerulean hinge"]);
+      expect(result.results[0]).toMatchObject({ id: "phrase-split", strength: "strong" });
+      expect(strengths(result)).toMatchObject({ "phrase-new": "weak", "phrase-old": "weak", window: "weak" });
+      expect(Object.values(strengths(result)).filter(strength => strength === "strong")).toHaveLength(1);
+    } finally {
+      restoreFetch();
     }
   });
 });

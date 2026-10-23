@@ -14,7 +14,6 @@ The [quickstart](../README.md#quickstart) gets a brain running in two shells. Th
 | `memory-mcp/` | `tokens.json` (hashes only) and the `DISABLED` kill switch |
 | `logs/` | Each job's log, `memory-mcp.log` and `memory-mcp-writes.log` |
 | `eval/` | Your eval questions and results |
-| `models/` | The reranker model, downloaded on first start |
 
 `nbrain init` is safe to run again: it never overwrites a file or resets a role that exists. The first run writes `env` and stops. The second creates the folders, starts the context repo from `templates/context`, applies the schema and creates the server's two database roles, `memory_ro` and `memory_writer`. Their passwords go into `env`, or into the login Keychain when `KEYCHAIN_PREFIX` is set.
 
@@ -25,7 +24,7 @@ If port 5433 is taken, run `PG_PORT=5444 docker compose up -d` and change `DATAB
 `bin/install-launchd.sh` renders the jobs in `launchd/` into `$BRAIN_HOME/launchd` and links them into `~/Library/LaunchAgents`. Leave out the ones you don't run with `SKIP`. It never loads a job; load each one yourself:
 
 ```sh
-SKIP="rerank backup" bin/install-launchd.sh
+SKIP="backup" bin/install-launchd.sh
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.brain.memory-mcp.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.brain.ingest.plist
 ```
@@ -34,14 +33,13 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.brain.ingest.plist
 |---|---|---|
 | `dev.brain.memory-mcp` | The MCP server, kept alive | `memory-mcp.out.log` |
 | `dev.brain.ingest` | Connectors and upkeep loops, kept alive | `brain-ingest.log` |
-| `dev.brain.rerank` | The reranker, kept alive | `rerank.log` |
 | `dev.brain.backup` | `bin/backup.sh` every 6 hours | `backup.log` |
 
 `bin/restart-memory-mcp.sh` restarts the launchd server without dropping a request.
 
-## The reranker
+## Models
 
-`bin/run-rerank.sh` downloads Qwen3-Reranker-0.6B (Q8_0 GGUF) into `$BRAIN_HOME/models` on first start and serves it with `llama-server` on the port in `RERANK_URL`. Uncomment `RERANK_URL` in the env file when you run it; without it, search keeps the fused order.
+Embeddings come from Ollama on this machine (`ollama pull qwen3-embedding:0.6b`, at `OLLAMA_URL`). The search judge, `@cf/cloudflare/clef`, runs on [Workers AI](https://developers.cloudflare.com/workers-ai/): set `CLOUDFLARE_ACCOUNT_ID` and an API token with Workers AI access, as `CLOUDFLARE_API_TOKEN` in the env file or, with `KEYCHAIN_PREFIX` set, in the login Keychain item `<prefix>-cf-ai`. Without Ollama nothing new is indexed, and a search or brief whose embedding fails or takes over 6 s goes on without it (search without its meaning channel, a brief with the profile in its own order). Without the judge, search keeps the fused order and calls a hit strong only when it holds every word that matters. Each logs it, and `nbrain doctor` and the Sunday checkup say which model is down.
 
 ## Connectors
 
@@ -61,11 +59,11 @@ The Sunday message goes out through `BRAIN_NOTIFY`: a command that reads the tex
 
 ## Backups
 
-`bin/backup.sh` takes a `pg_dumpall` from the Postgres container (`PG_CONTAINER`), then backs up `$BRAIN_HOME` (without raw Postgres data and models) and the repository to any [restic](https://restic.net) repository in `RESTIC_REPOSITORY`. Add paths with `BACKUP_PATHS` and excludes with `$BRAIN_HOME/backup-excludes`. An append-only restic REST server means this machine cannot delete or change snapshots.
+`bin/backup.sh` takes a `pg_dumpall` from the Postgres container (`PG_CONTAINER`), then backs up `$BRAIN_HOME` (without raw Postgres data) and the repository to any [restic](https://restic.net) repository in `RESTIC_REPOSITORY`. Add paths with `BACKUP_PATHS` and excludes with `$BRAIN_HOME/backup-excludes`. An append-only restic REST server means this machine cannot delete or change snapshots.
 
 ## Linux
 
-The launchd templates, `KEYCHAIN_PREFIX`, `bin/restart-memory-mcp.sh` and the Claude Desktop config path are macOS-only. Run `bin/run-memory-mcp.sh`, `bin/run-ingest.sh` and, if you use it, `bin/run-rerank.sh` under systemd or a shell.
+The launchd templates, `KEYCHAIN_PREFIX`, `bin/restart-memory-mcp.sh` and the Claude Desktop config path are macOS-only. Run `bin/run-memory-mcp.sh` and `bin/run-ingest.sh` under systemd or a shell.
 
 ## Settings
 
@@ -79,12 +77,12 @@ All in `$BRAIN_HOME/env`; [`env.example`](../env.example) has each one with a co
 | `BRAIN_NAME` | `nbrain` | The server's name in clients and the head of its instructions |
 | `DATABASE_URL` | | Postgres superuser URL, for ingest and the CLI only |
 | `MEMORY_RO_DATABASE_URL`, `MEMORY_WRITER_DATABASE_URL` | | The server's roles; `nbrain init` writes them. Without a writer URL, `remember`, `save` and `skill_save` are off |
-| `KEYCHAIN_PREFIX` | | Keep the role passwords in the macOS login Keychain instead |
+| `KEYCHAIN_PREFIX` | | Keep the role passwords and the Workers AI token in the macOS login Keychain instead |
 | `MEMORY_MCP_PORT` | `8830` | The server's port on 127.0.0.1 |
 | `PUBLIC_URL` | | HTTPS origin for remote clients and OAuth ([connect](connect.md#remote-access)) |
 | `OWNER_TAILSCALE_LOGIN` | | The Tailscale login allowed to approve OAuth grants |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Embeddings |
-| `RERANK_URL` | | The reranker; unset skips reranking |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | | Workers AI, for the search judge |
 | `LLM_URLS` | `http://127.0.0.1:4000` | OpenAI-compatible endpoints, tried in order |
 | `LLM_API_KEY`, `LLM_API_KEY_FILE` | | The key, or a file holding it |
 | `MODEL_READING`, `MODEL_CARDS`, `MODEL_EXTRACTION`, `MODEL_CURATOR` | `src/models.ts` | Per-role model, `model` or `model@thinking`: reading (image descriptions), cards (library cards, enrichment), extraction (records), curator (the curator and now) |
@@ -110,7 +108,7 @@ Put `bin/` on your `PATH` to type `nbrain`. `nbrain help` lists them:
 | Command | Does |
 |---|---|
 | `init [--name "Full Name"]` | Env file, folders, context repo, database and roles |
-| `doctor` | Checks the database, models, connectors, the server and the public door |
+| `doctor` | Checks the database, embeddings and search judge, chat models, connectors, the server and the public door |
 | `connect <client>` | Gives a client a token and writes the brain into its config |
 | `token list \| add \| revoke` | Agent tokens and OAuth grants |
 | `mcp` | The stdio relay for clients that only start local commands |

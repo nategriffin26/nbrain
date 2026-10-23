@@ -41,15 +41,15 @@ URLs are canonicalised (tracking parameters removed, `twitter.com` read as `x.co
 `search` runs its channels side by side over the chunks:
 
 - Words: BM25 through ParadeDB, with headings and people boosted.
-- Meaning: Qwen3-Embedding-0.6B vectors through Ollama, in pgvector.
+- Meaning: Qwen3-Embedding-0.6B vectors through Ollama, in pgvector. If the query's embedding fails or takes over 6 s (Ollama reloading an idle model took 4.2 s), search runs without this channel.
 - Date, person and source channels when the query names one ("last week", "Mom", "texts"), and, when it names two or more, a channel for the items that meet them all.
 - A newest-first channel when the query asks for the latest of something, and one for codes it names (order numbers, bookings, phones).
 
-Reciprocal rank fusion merges them, one hit per item. A local cross-encoder (Qwen3-Reranker-0.6B under `llama-server`) reorders the head of the list; without `RERANK_URL` the fused order stands. An item id in the query comes first.
+Reciprocal rank fusion merges them, one hit per item. An item id in the query comes first. The judge, Cloudflare's Clef on Workers AI, reads the first 30 in one call (about 1.2 s at p90), gives each the probability that it answers the query, and reorders them with the fused rank kept as a 4:1 prior. If the judge fails or takes over 4 s, search logs it and keeps the fused order.
 
 What comes back is built to be read honestly:
 
-- **Strong or weak.** A result is strong when the reranker judges that it answers the query, it falls in the dates the query names (by when it was sent, or a nearby message in its conversation naming that day), and it holds the names the query names. Without the reranker, a result is strong only when it holds every word that matters. `nothing_strong: true` means no result is strong, and the tool tells agents to say so instead of guessing.
+- **Strong or weak.** A result is strong when the judge gives it at least even odds of answering the query (0.5, Clef's yes/no boundary, fixed before it was measured), it falls in the dates the query names (by when it was sent, or a nearby message in its conversation naming that day), and it holds the names the query names. Without the judge, a result is strong only when it holds every word that matters. On the recall eval the judge found 124 of 172 answers, against 127 for the local cross-encoder it replaced (no significant difference) and 120 with no judge, where 101 answerable questions got nothing strong; of 19 questions with no answer, it called 2 strong. `nothing_strong: true` means no result is strong, and the tool tells agents to say so instead of guessing.
 - **Folding.** One mail thread, one order's mails and delivery notices, and texts already shown in another hit's conversation fold into one result with `more: n`. A result that folds look-alikes lists each of them (date, title, id) in `folded`, itself included, oldest first: the sequence (ordered, shipped, delivered; a value set, then changed) is what says which one is current, so folding keeps it.
 - **Exact.** `exact: true` finds the query word for word (case-insensitive) in an item's text or title, newest first, every match strong: a name, an order number, a phrase someone wrote. It uses no model, keeps every filter and the private and code rules, and reads a trigram index: usually well under half a second, up to about two for very common words or two-letter strings, which trigrams can't narrow.
 - **Conversations.** A text, or a bot chat turn imported in pieces, is shown with the messages around it in its thread, and nearby conversations in one thread show as one.
@@ -61,7 +61,7 @@ What comes back is built to be read honestly:
 
 ### Records
 
-Mail and texts that mention money, an order, a booking or a due date (not Gmail's promotions, social or forums tabs) are read by the extraction model into typed records: bill, payment, order, appointment and a few more, each pointing at the item it came from. Calendar events become appointments as they stand. A later record of the same thing sets `superseded_by` on the earlier one; so does a correction that shows a record was never true. Search shows a current record with the item it was read from and leaves superseded ones out; `fetch` by id still opens them.
+Mail and texts that mention money, an order, a booking or a due date (not Gmail's promotions, social or forums tabs) are read by the extraction model into typed records: bill, payment, order, appointment and a few more, each pointing at the item it came from. A message is a record only when it is itself a bill owed, a payment made, an order placed (with its shipping and delivery updates) or an appointment kept; a "statement ready" alert, a sale or deposit notice, a low-balance warning, an invitation not yet accepted and group-chat plans are not. On a blind check of fresh messages this cut records that weren't records from 43-46% to 8-9%, and missed 4-5% of real ones. Calendar events become appointments as they stand. A later record of the same thing sets `superseded_by` on the earlier one; so does a correction that shows a record was never true, and a record a correction retracted is never rewritten by a re-read. When a re-read finds an item is no record, its record is deleted and the one it superseded is current again. Search shows a current record with the item it was read from and leaves superseded ones out; `fetch` by id still opens them.
 
 ## The profile
 
@@ -130,7 +130,7 @@ Once a week, at the first tick from 09:00 on Sunday, ingest sends a message thro
 
 - **Profile changes.** Each curator and correction commit of the week in plain words, with the id that takes it back.
 - **Library.** The digest above.
-- **Checkup.** The recall eval's latest score beside the week before, connectors not read in the last day or whose last read failed, and how many bookmarks and saves are still to card.
+- **Checkup.** The recall eval's latest score beside the week before, connectors not read in the last day or whose last read failed, whether the search judge and the embeddings answered, and how many bookmarks and saves are still to card.
 
 `nbrain weekly` prints this week's message; `nbrain weekly --send` sends it now.
 
@@ -170,8 +170,8 @@ Every caller is a token: an agent name and its scopes. A tool is offered to a to
 
 Privacy and safety:
 
-- **Local.** Postgres, the context repo, embeddings and reranking run on your machine. The server listens on 127.0.0.1; anything remote comes through a proxy you set up ([connect](connect.md#remote-access)).
-- **What leaves.** Brain content leaves only in model calls to `LLM_URLS` (records, library triage, image descriptions, the curator, now) and in the Sunday message through `BRAIN_NOTIFY`. Other outbound requests fetch what you asked to keep: a saved URL, X bookmarks and their links, YouTube transcripts, the pages of reference cards.
+- **Local.** Postgres, the context repo and embeddings run on your machine. The server listens on 127.0.0.1; anything remote comes through a proxy you set up ([connect](connect.md#remote-access)).
+- **What leaves.** Brain content leaves only in model calls: to Workers AI (each search's query and its first 30 hits, to judge) and to `LLM_URLS` (records, library triage, image descriptions, the curator, now); and in the Sunday message through `BRAIN_NOTIFY`. Other outbound requests fetch what you asked to keep: a saved URL, X bookmarks and their links, YouTube transcripts, the pages of reference cards.
 - **Private.** `private` marks an item or its whole thread. Search, `fetch`, `changes`, briefs, the curator's evidence, now, the library and its captures leave it out; only a life-scope `search` or `fetch` with `private: true` opens it. Within a minute, profile and `closed.md` lines sourced to it (or to a record read from it) are removed in one commit, and now is rewritten; corrections about it are never shown to a model. It stays in the record, and `sql` still reads it.
 - **Least privilege.** The server never gets the Postgres superuser. It reads as `memory_ro`, which can only `SELECT` schema `memory`, and writes as `memory_writer`, which can only insert notes, saves and corrections, mark and unmark private, and set a card's status.
 - **Hashed tokens.** `$BRAIN_HOME/memory-mcp/tokens.json` stores only the SHA-256 of each token.
@@ -189,7 +189,7 @@ A style becomes the default only when you say so; the brief points to it for scr
 
 ## The eval
 
-`nbrain eval questions.json` runs each question through the same search agents get (all sources, reranked, 10 results). A question passes only if every expected fact appears in the results, so there is no LLM judge. Each miss names the stage that lost it. A miss whose fact is no longer anywhere in memory is `stale`: a question to update, not a search failure.
+`nbrain eval questions.json` runs each question through the same search agents get (all sources, judged, 10 results). A question passes only if every expected fact appears in the results, so no model grades it. Each miss names the stage that lost it. A miss whose fact is no longer anywhere in memory is `stale`: a question to update, not a search failure.
 
 ```json
 { "questions": [{ "id": "saved-1", "category": "saved", "query": "how much did context per chunk cut retrieval failures", "facts": ["49%"] }] }

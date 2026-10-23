@@ -77,8 +77,8 @@ export function chunkBody(body: string): Chunk[] {
 
 /** About `chars` of `text` where the most of the query's words meet (each word counted once, then all their uses, then
  *  the window nearest `near`, the offset of the chunk search matched), opening a little before the first; at `near` when
- *  none is there. A word counts where a word starts. A cut through an emoji is mended (the reranker's JSON parser rejects
- *  a lone surrogate, which failed the whole search). */
+ *  none is there. A word counts where a word starts. A cut through an emoji is mended (a lone surrogate can fail a model
+ *  call, and once failed a whole search). */
 export function quoteOf(text: string, words: readonly string[], chars: number, near = 0): string {
   text = cleanText(text);
   const folded = fold(text);

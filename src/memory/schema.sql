@@ -117,7 +117,7 @@ create table if not exists memory.item_people (
 create index if not exists item_people_by_person on memory.item_people (person_id, item_id);
 
 -- What search ranks: each item's body cut into chunks (text.ts chunkBody), with its heading (item title — section), the
--- people on it, the line of context that places it (written by a model: capture enrichment, imports) and its local embedding
+-- people on it, the line of context that places it (written by a model: capture enrichment, imports) and its embedding
 -- (Qwen3-Embedding-0.6B, 1024 dims). embed_hash keys the embedding input, so an unchanged chunk keeps its vector.
 create table if not exists memory.chunks (
 	id bigserial primary key,

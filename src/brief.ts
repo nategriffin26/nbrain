@@ -105,10 +105,10 @@ export function sortFound<T extends { id: string; source: string }>(found: reado
 
 const vectors = new Map<string, number[]>();
 /** Embeddings, kept by text hash: profile lines and now blocks change at most daily, so a brief embeds little more than
- *  its task. */
+ *  its task. A brief is waited on, so what is missing is embedded urgently, under one deadline. */
 async function embedded(texts: readonly string[]): Promise<number[][]> {
   const missing = [...new Set(texts.filter(text => !vectors.has(sha256(text))))];
-  if (missing.length) (await embed(missing)).forEach((vector, at) => vectors.set(sha256(missing[at]!), vector));
+  if (missing.length) (await embed(missing, { urgent: true })).forEach((vector, at) => vectors.set(sha256(missing[at]!), vector));
   return texts.map(text => vectors.get(sha256(text))!);
 }
 // unit vectors: the dot product is the cosine
@@ -123,26 +123,36 @@ export async function brief(agent: Agent, input: BriefInput, pool: Pool, { to }:
   const matched = projectBlock(blocks, input.project);
   const candidates = matched ? [] : blocks;
   const sources = sourcesFor(agent);
-  // searches get the task's opening: the reranker marked the explainer skill weak for a 1,300-character nTop request
-  // and strong for its first 300 characters
+  // searches get the task's opening: the local cross-encoder search had before its judge marked the explainer skill weak
+  // for a 1,300-character nTop request and strong for its first 300 characters
   const query = task.length <= QUERY ? task : task.slice(0, task.lastIndexOf(" ", QUERY));
   const cut = to ? { to } : {};
-  const [[taskVector, ...known], { skills }, skillHits, record] = await Promise.all([
-    embedded([`${INSTRUCTION}${task}`, ...rest.map(line => line.text), ...candidates.map(block => [block.name, ...block.lines].join("\n"))]),
+  // without the embeddings (failed, or past their deadline) the profile and now keep their own order
+  const nearness = embedded([`${INSTRUCTION}${task}`, ...rest.map(line => line.text), ...candidates.map(block => [block.name, ...block.lines].join("\n"))]).catch((error: unknown) => {
+    console.warn(`${new Date().toISOString()} embed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  });
+  const [vectorsFound, { skills }, skillHits, record] = await Promise.all([
+    nearness,
     catalog(),
     search(pool, { query, source: ["skill"], limit: POINTERS, ...cut }),
-    // library cards come from this search too: a card search of their own reranked 30 more hits, a second the reranker
-    // takes one after the other, and found the same cards on library tasks
+    // library cards come from this search too: a card search of their own judged 30 more hits and found the same cards on
+    // library tasks
     search(pool, { query, limit: 10, ...cut, ...(sources ? { source: sources.filter(source => source !== "skill") } : {}) }),
   ]);
-  const lineVectors = known.slice(0, rest.length), blockVectors = known.slice(rest.length);
 
-  const near = rest.map((line, at) => {
-    const hub = lineVectors.reduce((sum, other) => sum + cosine(lineVectors[at]!, other), 0) / lineVectors.length;
-    return { text: line.text, score: cosine(taskVector!, lineVectors[at]!) - hub };
-  }).sort((a, b) => b.score - a.score).map(line => line.text);
+  let near = rest.map(line => line.text);
   // the project's block alone; with no project, every block, nearest first, the far ones only as room allows
-  const ranked = matched ? [matched] : candidates.map((block, at) => ({ block, score: cosine(taskVector!, blockVectors[at]!) })).sort((a, b) => b.score - a.score).map(each => each.block);
+  let ranked = matched ? [matched] : candidates;
+  if (vectorsFound) {
+    const [taskVector, ...known] = vectorsFound;
+    const lineVectors = known.slice(0, rest.length), blockVectors = known.slice(rest.length);
+    near = rest.map((line, at) => {
+      const hub = lineVectors.reduce((sum, other) => sum + cosine(lineVectors[at]!, other), 0) / lineVectors.length;
+      return { text: line.text, score: cosine(taskVector!, lineVectors[at]!) - hub };
+    }).sort((a, b) => b.score - a.score).map(line => line.text);
+    if (!matched) ranked = candidates.map((block, at) => ({ block, score: cosine(taskVector!, blockVectors[at]!) })).sort((a, b) => b.score - a.score).map(each => each.block);
+  }
   const now = ranked.length ? { ...(day ? { day } : {}), blocks: ranked.map(block => ({ name: block.name, lines: block.lines })) } : undefined;
 
   const found = record.results.filter(result => result.strength === "strong" && result.source !== "skill");

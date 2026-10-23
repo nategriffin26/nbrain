@@ -1,6 +1,7 @@
 // memory-mcp: the owner's memory and context as one authed MCP server for every agent, on 127.0.0.1.
 // Local agents use loopback; Tailscale Serve/Funnel carries remote requests and owner identity.
-// It needs Postgres, Ollama (embeddings) and the reranker (falls back without it). Never add non-memory tools here.
+// It needs Postgres; without Ollama search and the brief run without meaning, without Workers AI search has no judge.
+// Never add non-memory tools here.
 //
 // The tools (contract.ts) by layer: brief (start of a task: rules, where the project stands, what to load); search,
 // fetch, changes, sql (the record, verbatim; fetch also opens the profile, now.md and library cards); person; library,

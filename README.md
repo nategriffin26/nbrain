@@ -84,9 +84,10 @@ A token sees only the tools its scopes allow. `search` and `fetch` also answer i
 | [Docker](https://www.docker.com) | Postgres 17 with [pgvector](https://github.com/pgvector/pgvector) and [ParadeDB pg_search](https://github.com/paradedb/paradedb), from `compose.yml` |
 | Node 26 | The server, ingest and CLI |
 | [Ollama](https://ollama.com) | Local embeddings, `qwen3-embedding:0.6b` |
+| A [Cloudflare](https://developers.cloudflare.com/workers-ai/) account with Workers AI | The search judge, `@cf/cloudflare/clef`, which says which hits answer |
 | An OpenAI-compatible chat endpoint | Records, library cards, the curator and now |
 
-Optional: `llama-server` from [llama.cpp](https://github.com/ggml-org/llama.cpp) for the local reranker, Google Chrome for library captures, [Executor](https://executor.sh) for mail, texts and calendar, [xurl](https://github.com/xdevplatform/xurl) for X bookmarks, [yt-dlp](https://github.com/yt-dlp/yt-dlp) for YouTube, and [restic](https://restic.net) for backups.
+Optional: Google Chrome for library captures, [Executor](https://executor.sh) for mail, texts and calendar, [xurl](https://github.com/xdevplatform/xurl) for X bookmarks, [yt-dlp](https://github.com/yt-dlp/yt-dlp) for YouTube, and [restic](https://restic.net) for backups.
 
 ## Quickstart
 
@@ -99,7 +100,7 @@ ollama pull qwen3-embedding:0.6b
 bin/nbrain init --name "Alex Rivera" # writes ~/.brain/env, stops
 ```
 
-Edit `~/.brain/env`: check `OWNER_*`, `TZ` and `DATABASE_URL`, and set `LLM_URLS` and `LLM_API_KEY` (or `LLM_API_KEY_FILE`). Then:
+Edit `~/.brain/env`: check `OWNER_*`, `TZ` and `DATABASE_URL`, set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (a token with Workers AI access), and set `LLM_URLS` and `LLM_API_KEY` (or `LLM_API_KEY_FILE`). Then:
 
 ```sh
 bin/nbrain init                      # context repo, schema, roles

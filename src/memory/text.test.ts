@@ -37,7 +37,7 @@ it("cuts a long body into overlapping chunks that cover every character", () => 
   for (const [i, chunk] of chunks.entries()) if (i > 0) expect(chunk.start).toBeLessThan(chunks[i - 1]!.end);
 });
 
-it("never cuts an emoji in half: the reranker rejects a lone surrogate", () => {
+it("never cuts an emoji in half: a lone surrogate can fail a model call", () => {
   // the window opens 4 characters before "apps", on the emoji's second half
   expect(quoteOf(`${"x".repeat(116)}📱 a apps`, ["apps"], 20).isWellFormed()).toBe(true);
 });

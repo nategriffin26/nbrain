@@ -10,6 +10,7 @@ import { BRAIN_HOME, CONTEXT, LOGS, OWNER } from "./config.js";
 import { ensureRepo, commit } from "./context/git.js";
 import { prepareReader } from "./memory/records.js";
 import { EMBED_MODEL } from "./memory/store.js";
+import { modelsCheck } from "./weekly.js";
 
 const run = promisify(execFile);
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -59,7 +60,7 @@ export async function initCommand(args: string[]): Promise<void> {
   const name = at >= 0 ? args[at + 1] : undefined;
   await mkdir(BRAIN_HOME, { recursive: true, mode: 0o700 });
   if (await writeEnv(name)) {
-    console.log(`wrote ${ENV_FILE}: check OWNER_*, TZ, DATABASE_URL and LLM_URLS, then run \`nbrain init\` again`);
+    console.log(`wrote ${ENV_FILE}: check OWNER_*, TZ, DATABASE_URL, CLOUDFLARE_* and LLM_URLS, then run \`nbrain init\` again`);
     return;
   }
   for (const dir of [LOGS, `${BRAIN_HOME}/eval`, `${BRAIN_HOME}/captures`, `${BRAIN_HOME}/memory-mcp`]) await mkdir(dir, { recursive: true });
@@ -100,10 +101,9 @@ export async function doctorCommand(): Promise<void> {
   } finally {
     await pool.end();
   }
-  const tags = await reach(`${process.env.OLLAMA_URL ?? "http://127.0.0.1:11434"}/api/tags`);
-  const models = tags?.ok ? ((await tags.json()) as { models: { name: string }[] }).models.map(model => model.name) : [];
-  checks.push([models.some(model => model.startsWith(EMBED_MODEL)), "embeddings", tags ? `ollama has ${EMBED_MODEL}: ${models.some(model => model.startsWith(EMBED_MODEL))}` : "ollama unreachable"]);
-  if (process.env.RERANK_URL) checks.push([(await reach(`${process.env.RERANK_URL}/health`))?.ok ?? false, "reranker", process.env.RERANK_URL]);
+  const failed = await modelsCheck();
+  checks.push([!failed.embeddings, "embeddings", failed.embeddings ? `ollama: ${failed.embeddings}` : `ollama ${EMBED_MODEL}`]);
+  checks.push([!failed.judge, "search judge", failed.judge ?? "workers ai @cf/cloudflare/clef"]);
   const llm = (process.env.LLM_URLS ?? "").split(",")[0]?.trim();
   if (llm) {
     const key = process.env.LLM_API_KEY ?? (process.env.LLM_API_KEY_FILE && existsSync(process.env.LLM_API_KEY_FILE) ? (await readFile(process.env.LLM_API_KEY_FILE, "utf8")).trim() : "");

@@ -1,7 +1,7 @@
 #!/bin/bash
 # macOS: render launchd/*.plist.in for this checkout into $BRAIN_HOME/launchd and link them into ~/Library/LaunchAgents.
 # It never loads or restarts a job: load a new one with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist`;
-# restart memory-mcp only with bin/restart-memory-mcp.sh (no gap). Optional jobs: skip one with SKIP="backup rerank".
+# restart memory-mcp only with bin/restart-memory-mcp.sh (no gap). Optional jobs: skip one with SKIP="backup".
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export BRAIN_HOME="${BRAIN_HOME:-$HOME/.brain}"

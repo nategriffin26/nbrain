@@ -1,6 +1,57 @@
-import { describe, expect, it } from "vitest";
-import { BUDGET, compose, ompToken, projectBlock, sortFound } from "./brief.js";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { brief, BUDGET, compose, ompToken, projectBlock, sortFound } from "./brief.js";
 import type { NowBlock } from "./context/profile.js";
+import { embedding, fakeModels, never, refused, restoreFetch, serverError } from "./testai.js";
+import { freshDatabase } from "./testdb.js";
+
+vi.hoisted(() => { process.env.BRAIN_CONTEXT = "/tmp/nbrain-fixes/context-brief"; });
+
+describe.runIf(!!process.env.TEST_DATABASE_URL)("brief without its embeddings", () => {
+  const agent = { name: "omp", scopes: ["work" as const], signer: "omp" };
+  /** A brief over a profile of `work` lines, with the warnings it logged. */
+  async function briefOver(work: string[]): Promise<{ text: string; warned: string; ms: number }> {
+    const dir = process.env.BRAIN_CONTEXT!;
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/basics.md`, `# Basics\n\n## Always\n- Plain words, outcome first.\n\n## Work\n${work.map(line => `- ${line}`).join("\n")}\n`);
+    const { pool } = await freshDatabase("brief");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const started = Date.now();
+      const text = await brief(agent, { task: "add a test for the parser" }, pool);
+      return { text, warned: warn.mock.calls.map(call => String(call[0])).join("\n"), ms: Date.now() - started };
+    } finally {
+      warn.mockRestore();
+      await pool.end();
+    }
+  }
+
+  it("bug: a failed task embedding (Ollama down) failed the whole brief; it logs and keeps the profile's own order", async () => {
+    fakeModels(() => refused);
+    try {
+      const { text, warned } = await briefOver(["Tests name the bug they catch.", "Ship small changes."]);
+      expect(warned).toMatch(/embed: fetch failed/);
+      expect(text).toContain("Plain words, outcome first.");
+      expect(text.indexOf("Tests name the bug they catch.")).toBeLessThan(text.indexOf("Ship small changes."));
+    } finally {
+      restoreFetch();
+    }
+  }, 60_000);
+
+  it("bug: a cold profile's lines had no deadline though the task's embedding was quick; the whole step gives up at its deadline", async () => {
+    // the task's and the search queries' embeddings answer; the profile lines' never do
+    fakeModels(call => call.model === "@cf/cloudflare/clef" ? [500, serverError] : call.body.text!.every(text => text.startsWith("Instruct:")) ? embedding(call.body.text!) : never());
+    try {
+      const { text, warned, ms } = await briefOver(["Commit messages say why.", "Keep functions short."]);
+      expect(ms).toBeLessThan(8000);
+      expect(warned).toMatch(/embed: .*timeout/);
+      expect(text.indexOf("Commit messages say why.")).toBeLessThan(text.indexOf("Keep functions short."));
+    } finally {
+      restoreFetch();
+    }
+  }, 70_000);
+});
 
 const lines = (prefix: string, count: number, chars = 80) => Array.from({ length: count }, (_, at) => `${prefix} ${at} ${"x".repeat(chars)}`);
 
