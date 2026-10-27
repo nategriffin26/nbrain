@@ -14,6 +14,8 @@ const OS = `${O}'s`;
 
 export const CARD_KINDS = ["tool", "technique", "reference", "idea", "read", "person"] as const;
 export const CARD_STATUSES = ["new", "tried", "adopted", "dropped"] as const;
+/** Models pass one source as a bare string as often as a list; both mean the same filter. */
+const SOURCES = z.preprocess(value => typeof value === "string" ? [value] : value, z.array(z.string()));
 
 export const MCP_TOOLS = {
   brief: {
@@ -30,7 +32,7 @@ export const MCP_TOOLS = {
     input: z.object({
       query: z.string(),
       person: z.string().optional(),
-      source: z.array(z.string()).optional(),
+      source: SOURCES.optional(),
       from: z.string().optional(),
       to: z.string().optional(),
       limit: z.number().optional().describe("Results, default 10, at most 30"),
@@ -48,7 +50,7 @@ export const MCP_TOOLS = {
       `What came in since a time, newest first, grouped by thread: texts, mail, calendar changes, records, bookmarks, saves, chats with the bots and coding sessions, with a count per source. Use it to catch up ("since this morning", "anything new from Sam since Monday"). Filters: source, person.`,
     input: z.object({
       since: z.string().describe('ISO time, YYYY-MM-DD, or "yesterday", "this morning", "3 days ago"'),
-      source: z.array(z.string()).optional(),
+      source: SOURCES.optional(),
       person: z.string().optional(),
       limit: z.number().optional().describe("Threads, default 30, at most 100"),
     }),
