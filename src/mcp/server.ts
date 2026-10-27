@@ -32,7 +32,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import pg from "pg";
 import * as z from "zod";
-import { BRAIN_HOME, BRAND, CONTEXT, LOGS, OWNER } from "../config.js";
+import { BRAIN_HOME, BRAND, CONTEXT, LOGS, MEMORY_POOL, OWNER } from "../config.js";
 import { brief, type BriefInput } from "../brief.js";
 import { captureTools } from "../capture/save.js";
 import { NOW_FILE, profileFiles, readNow } from "../context/profile.js";
@@ -55,8 +55,8 @@ const { name: owner } = OWNER;
 const run = promisify(execFile);
 
 const need = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`${name} is not set`); return value; };
-const reader = new pg.Pool({ connectionString: need("MEMORY_RO_DATABASE_URL"), max: 12 });
-const writer = process.env.MEMORY_WRITER_DATABASE_URL ? new pg.Pool({ connectionString: process.env.MEMORY_WRITER_DATABASE_URL, max: 1 }) : undefined;
+const reader = new pg.Pool({ connectionString: need("MEMORY_RO_DATABASE_URL"), max: MEMORY_POOL.memory_ro });
+const writer = process.env.MEMORY_WRITER_DATABASE_URL ? new pg.Pool({ connectionString: process.env.MEMORY_WRITER_DATABASE_URL, max: MEMORY_POOL.memory_writer }) : undefined;
 for (const pool of [reader, writer]) pool?.on("error", error => console.error("Postgres:", error.message));
 
 function log(file: string, entry: Record<string, unknown>) {

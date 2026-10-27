@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { appendFile, chmod, cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import pg from "pg";
-import { BRAIN_HOME, CONTEXT, LOGS, OWNER } from "./config.js";
+import { BRAIN_HOME, CONTEXT, LOGS, OWNER, MEMORY_POOL, connectionLimit } from "./config.js";
 import { ensureRepo, commit } from "./context/git.js";
 import { prepareReader } from "./memory/records.js";
 import { EMBED_MODEL } from "./memory/store.js";
@@ -46,7 +46,7 @@ async function roles(pool: pg.Pool): Promise<string[]> {
   for (const [role, member, suffix, envName] of [["memory_ro", true, "ro", "MEMORY_RO_DATABASE_URL"], ["memory_writer", false, "writer", "MEMORY_WRITER_DATABASE_URL"]] as const) {
     if ((await pool.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [role])).rowCount) continue;
     const password = randomBytes(24).toString("base64url");
-    await pool.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'${member ? " IN ROLE memory_reader" : ""}`);
+    await pool.query(`CREATE ROLE ${role} LOGIN CONNECTION LIMIT ${connectionLimit(role)} PASSWORD '${password}'${member ? " IN ROLE memory_reader" : ""}`);
     await pool.query(`GRANT CONNECT ON DATABASE "${db}" TO ${role}`);
     if (process.env.KEYCHAIN_PREFIX) await run("/usr/bin/security", ["add-generic-password", "-U", "-a", role, "-s", `${process.env.KEYCHAIN_PREFIX}-${suffix}`, "-w", password]);
     else await appendFile(ENV_FILE, `${envName}=postgres://${role}:${password}@${at}\n`);
@@ -92,6 +92,11 @@ export async function doctorCommand(): Promise<void> {
   try {
     const { rows } = await pool.query<{ extname: string }>("SELECT extname FROM pg_extension WHERE extname IN ('vector', 'pg_search')");
     checks.push([rows.length === 2, "postgres", `extensions: ${rows.map(row => row.extname).join(", ") || "none"}`]);
+    const { rows: limits } = await pool.query<{ rolname: keyof typeof MEMORY_POOL; rolconnlimit: number }>("SELECT rolname, rolconnlimit FROM pg_roles WHERE rolname = ANY($1)", [Object.keys(MEMORY_POOL)]);
+    for (const { rolname: role, rolconnlimit: limit } of limits) {
+      const short = limit >= 0 && limit < MEMORY_POOL[role];
+      checks.push([!short, `${role} limit`, short ? `${limit} is below memory-mcp's pool of ${MEMORY_POOL[role]}: ALTER ROLE ${role} CONNECTION LIMIT ${connectionLimit(role)}` : `${limit < 0 ? "none" : limit} (pool ${MEMORY_POOL[role]})`]);
+    }
     const { rows: items } = await pool.query<{ source: string; n: number }>("SELECT source, count(*)::int AS n FROM memory.items GROUP BY source ORDER BY n DESC");
     checks.push([true, "items", items.map(row => `${row.source} ${row.n}`).join(", ") || "none yet"]);
     const { rows: cursors } = await pool.query<{ source: string; ago: string; last_error: string | null }>("SELECT source, coalesce(to_char(now() - last_ok_at, 'DD\"d\" HH24\"h\" MI\"m\"'), 'never') AS ago, last_error FROM brain.cursors ORDER BY source");

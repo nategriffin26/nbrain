@@ -15,7 +15,7 @@ The [quickstart](../README.md#quickstart) gets a brain running in two shells. Th
 | `logs/` | Each job's log, `memory-mcp.log` and `memory-mcp-writes.log` |
 | `eval/` | Your eval questions and results |
 
-`nbrain init` is safe to run again: it never overwrites a file or resets a role that exists. The first run writes `env` and stops. The second creates the folders, starts the context repo from `templates/context`, applies the schema and creates the server's two database roles, `memory_ro` and `memory_writer`. Their passwords go into `env`, or into the login Keychain when `KEYCHAIN_PREFIX` is set.
+`nbrain init` is safe to run again: it never overwrites a file or resets a role that exists. The two roles are created with a connection limit above memory-mcp's pool (`MEMORY_POOL` in `src/config.ts`); `nbrain doctor` flags a role whose limit is below it. The first run writes `env` and stops. The second creates the folders, starts the context repo from `templates/context`, applies the schema and creates the server's two database roles, `memory_ro` and `memory_writer`. Their passwords go into `env`, or into the login Keychain when `KEYCHAIN_PREFIX` is set.
 
 If port 5433 is taken, run `PG_PORT=5444 docker compose up -d` and change `DATABASE_URL` to match.
 

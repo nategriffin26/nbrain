@@ -11,6 +11,9 @@ const SLACK_MS = 5 * 60_000;
 const RESCAN_MS = 48 * 3_600_000;
 const RESCAN_EVERY_MS = 3_600_000;
 const PAGE = 200;
+const FIRST_CHATS = 20;
+const WIDEN = 4;
+const MAX_CHATS = 10_000; // list_chats' own maximum
 
 export interface Chat { id: number; name: string; is_group: boolean; participants: string[]; identifier: string }
 export interface Message {
@@ -46,6 +49,20 @@ export function messageEvent(chat: Chat, message: Message): NewEvent | undefined
   };
 }
 
+/**
+ * The program that lists the chats with a message since `start`. `list_chats` takes only a limit and answers newest
+ * activity first, so it asks for a short page and widens it only while the page's oldest chat is still within the window.
+ */
+export const changedChats = (start: string) => `
+const START = ${JSON.stringify(start)};
+for (let limit = ${FIRST_CHATS}; ; limit = Math.min(limit * ${WIDEN}, ${MAX_CHATS})) {
+  const listed = await call("apple-messages", "list_chats", { limit });
+  const oldest = listed.chats.at(-1);
+  if (!listed.possibly_more || limit >= ${MAX_CHATS} || !(oldest?.last_message_at >= START)) {
+    return listed.chats.filter(c => c.last_message_at >= START).map(c => ({ id: c.id, name: c.name ?? "", is_group: c.is_group === true, participants: c.participants ?? [], identifier: String(c.identifier ?? "") }));
+  }
+}`;
+
 async function chatMessages(chat: Chat, start: string, end: string): Promise<Message[]> {
   const out: Message[] = [];
   let until = end;
@@ -71,9 +88,7 @@ export async function pollMessages(pool: Pool): Promise<void> {
     const rescan = now - cursor.rescanned_at >= RESCAN_EVERY_MS;
     const start = new Date(rescan ? now - RESCAN_MS : Date.parse(cursor.after) - SLACK_MS).toISOString();
     const end = new Date(now).toISOString();
-    const chats = await executorProgram<Chat[]>(`
-const listed = await call("apple-messages", "list_chats", { limit: 10000 });
-return listed.chats.filter(c => c.last_message_at >= ${JSON.stringify(start)}).map(c => ({ id: c.id, name: c.name ?? "", is_group: c.is_group === true, participants: c.participants ?? [], identifier: String(c.identifier ?? "") }));`);
+    const chats = await executorProgram<Chat[]>(changedChats(start));
     for (const chat of chats) {
       for (const message of await chatMessages(chat, start, end)) {
         const event = messageEvent(chat, message);

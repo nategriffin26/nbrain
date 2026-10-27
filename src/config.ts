@@ -23,6 +23,14 @@ export const ASSISTANT = process.env.ASSISTANT_NAME ?? "the assistant";
 /** The brain's name where an agent sees it: the MCP server name and the head of its instructions. */
 export const BRAND = process.env.BRAIN_NAME ?? "nbrain";
 
+/**
+ * memory-mcp's Postgres pool sizes, and each login role's CONNECTION LIMIT (`nbrain init`, checked by `nbrain
+ * doctor`): the pool plus headroom for the standby copy that overlaps the live one during a restart. A limit below the
+ * pool makes calls fail with "too many connections for role" once enough run at once.
+ */
+export const MEMORY_POOL = { memory_ro: 12, memory_writer: 1 } as const;
+export const connectionLimit = (role: keyof typeof MEMORY_POOL) => MEMORY_POOL[role] + 4;
+
 /** The zone's short name now ("CT", "GMT+1"), for "11:05 PM CT". */
 export const zoneLabel = (at = new Date()) => {
   const name = new Intl.DateTimeFormat("en-US", { timeZone: ZONE, timeZoneName: "short" }).formatToParts(at).find(part => part.type === "timeZoneName")?.value ?? ZONE;
