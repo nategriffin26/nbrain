@@ -63,7 +63,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("brief and its pick", () => {
       return promise;
     };
     const { text, warned, ms } = await briefOver(["Commit messages say why."]);
-    expect(ms).toBeLessThan(15_000);
+    // the pick's deadline is 15 s; the bound leaves room for the brief's own work (3.4 s on a loaded machine)
+    expect(ms).toBeLessThan(20_000);
     expect(warned).toMatch(/brief pick: .*(timeout|aborted)/i);
     expect(text).toContain("Commit messages say why.");
   }, 70_000);
