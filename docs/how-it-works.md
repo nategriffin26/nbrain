@@ -122,7 +122,7 @@ Each reference card whose link is a web page gets captures under `$BRAIN_HOME/ca
 3. **Earlier on this.** Up to three strong record results for the task, the project's own coding sessions first, so an agent does not redo what was done or reopen what was settled.
 4. **Worth loading.** Up to three: the default style when the task is screen work, skills search finds strong for it, and strong library cards, each with the call that loads it.
 
-Within the budget, room goes first to the pointers and Always lines; past it, the picked lines go first, then the record results. When the pick fails or takes over 10 s, the profile keeps its own order and no other project's block shows. Scopes apply: a work token's brief has no `life.md`, Life block, mail or texts. Agents call it themselves (the server's instructions say to, first); it is never pushed into a session, because on ten real tasks sessions that called it beat sessions handed it at the start 7 to 1. `nbrain brief --task "…" [--project …]` prints one from memory-mcp over HTTP.
+Within the budget, room goes first to the pointers and Always lines; past it, the picked lines go first, then the record results. When the pick fails or takes over 15 s, the profile keeps its own order and no other project's block shows. Scopes apply: a work token's brief has no `life.md`, Life block, mail or texts. Agents call it themselves (the server's instructions say to, first); it is never pushed into a session, because on ten real tasks sessions that called it beat sessions handed it at the start 7 to 1. `nbrain brief --task "…" [--project …]` prints one from memory-mcp over HTTP.
 
 ## The Sunday message
 

@@ -30,15 +30,16 @@ const EARLIER = 3;
 const QUOTE = 160;
 /** Characters of the task a search gets. */
 const QUERY = 300;
-/** A brief is waited on: the pick gives up after this and the brief goes out without it. */
-const PICK_DEADLINE = 10_000;
+/** A brief is waited on: the pick gives up after this and the brief goes out without it. Cold calls to the pick's
+ *  model took 8.6-10.6 s on one install, warm ones 1.5-3.5 s. */
+const PICK_DEADLINE = 15_000;
 /** Record sources that are work on a project (a session, a bot chat, research, a saved page): ahead of texts and mail
  *  when the brief knows the project. */
 const WORK_RECORD = ["omp", "chat", "research", "saved"];
 const VISUAL = /\b(ui|ux|css|html|layout|design|visual|screens?|pages?|dashboards?|components?|styles?|styling|themes?|colou?rs?|fonts?|typography|landing|website|app icon|mockups?|figma|tailwind|swiftui)\b/i;
 /** The model reads every profile line, so a line that bears on the task without sharing its words (the phone his apps
  *  must work on, for a phone-app feature) is found. */
-const PICK = `You choose what an agent should be told about ${OWNER.name} before a task. You get the task, the profile lines about ${OWNER.them} (numbered; each with its file and the day it was written), and sometimes the blocks of what is in flight this week.
+const PICK = `You choose what an agent should be told about ${OWNER.name} before a task. You get the profile lines about ${OWNER.them} (numbered; each with its file and the day it was written), sometimes the blocks of what is in flight this week, and then the task.
 Pick the lines that would change how the agent does this task: a preference or decision it would otherwise get wrong, or a fact about ${OWNER.them}, ${OWNER.their} setup or ${OWNER.their} projects that the task needs. Leave out lines about other projects, lines that only state general good practice, and lines whose subject the task never touches. When two lines disagree, keep only the later one. Pick at most ${PICKED}, most important first; an empty list is a good answer when none bear on it.
 When blocks are given, pick the one block that is about this task's own work, or none.
 Answer with JSON only: {"lines": [numbers], "block": "block name" or null}`;
@@ -92,7 +93,9 @@ export function readPick(reply: string, lines: number, blocks: readonly string[]
 async function pick(task: string, project: string | undefined, lines: readonly ProfileLine[], blocks: readonly NowBlock[]) {
   const listed = lines.map((line, at) => `${at + 1}. (${line.file}${line.day ? `, ${line.day}` : ""}) ${line.text}`).join("\n");
   const offered = blocks.map(block => `- ${block.name}: ${block.lines[0]?.replace(/^- /, "") ?? ""}`).join("\n");
-  const content = `Task: ${task}${project?.trim() ? `\nProject: ${project.trim()}` : ""}\n\nProfile lines:\n${listed}${offered ? `\n\nBlocks:\n${offered}` : ""}`;
+  // the profile and the blocks change at most daily and the task every call: the task goes last, so the long part is a
+  // prefix the endpoint can cache (a cold call took 8.6 s, repeats 1.5 s)
+  const content = `Profile lines:\n${listed}${offered ? `\n\nBlocks:\n${offered}` : ""}\n\nTask: ${task}${project?.trim() ? `\nProject: ${project.trim()}` : ""}`;
   const reply = await complete({ role: "brief", maxTokens: 200, signal: AbortSignal.timeout(PICK_DEADLINE), messages: [{ role: "system", content: PICK }, { role: "user", content }] });
   return readPick(reply, lines.length, blocks.map(block => block.name));
 }
