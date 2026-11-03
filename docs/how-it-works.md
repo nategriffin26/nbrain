@@ -115,14 +115,14 @@ Each reference card whose link is a web page gets captures under `$BRAIN_HOME/ca
 
 ## The brief
 
-`brief` is the first call of a task: the task in a sentence and, when there is one, the project (a name, a repo directory or the working directory). It is built per call, around 1,500 tokens:
+`brief` is the first call of a task: the task in a sentence and, when there is one, the project (a name, a repo directory or the working directory). It is built per call, under 1,500 tokens:
 
-1. **Rules for this work.** The caller's `## Always` lines, then the profile lines nearest the task. A line that is near every task (a project list, a home folder) is ranked down.
-2. **Now.** The project's block; with no project, every block, nearest first.
+1. **Rules for this work.** The caller's `## Always` lines, then up to 12 profile lines a model (the `brief` role) picks as bearing on the task, most important first. The model reads every line, so a line that matters without sharing the task's words is found, and lines about other projects stay out.
+2. **Now.** The project's block. With no block for the project, the one block the same model picks as this task's own work, or none.
 3. **Earlier on this.** Up to three strong record results for the task, the project's own coding sessions first, so an agent does not redo what was done or reopen what was settled.
 4. **Worth loading.** Up to three: the default style when the task is screen work, skills search finds strong for it, and strong library cards, each with the call that loads it.
 
-Within the budget, room goes first to the pointers and Always lines; past it, the near lines go first, then other now blocks, then the record results. Scopes apply: a work token's brief has no `life.md`, Life block, mail or texts. Agents call it themselves (the server's instructions say to, first); it is never pushed into a session, because on ten real tasks sessions that called it beat sessions handed it at the start 7 to 1. `nbrain brief --task "…" [--project …]` prints one from memory-mcp over HTTP.
+Within the budget, room goes first to the pointers and Always lines; past it, the picked lines go first, then the record results. When the pick fails or takes over 10 s, the profile keeps its own order and no other project's block shows. Scopes apply: a work token's brief has no `life.md`, Life block, mail or texts. Agents call it themselves (the server's instructions say to, first); it is never pushed into a session, because on ten real tasks sessions that called it beat sessions handed it at the start 7 to 1. `nbrain brief --task "…" [--project …]` prints one from memory-mcp over HTTP.
 
 ## The Sunday message
 

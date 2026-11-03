@@ -16,6 +16,9 @@ export const ROLE_SEEDS = {
   // the curator and now.md judge what the owner's words change in the profile and what is in flight: the notes pass
   // before them got its fixtures right 0 of 3 runs with thinking off, 3 of 3 with low
   curator: { model: "anthropic/claude-sonnet-5-5", thinking: "low" },
+  // the brief's pick of profile lines for a task, waited on at every task start: on a real task Haiku returned 52 of 120
+  // lines against a limit of 12; Sonnet with thinking off kept to 12, the right ones first, in about 3.5 s
+  brief: { model: "anthropic/claude-sonnet-5-5", thinking: "off" },
 } satisfies Record<string, { model: string; thinking: Thinking }>;
 export type Role = keyof typeof ROLE_SEEDS;
 type Choice = { model: string; thinking: Thinking };
@@ -42,8 +45,9 @@ export interface ChatMessage {
 const gateways = (process.env.LLM_URLS ?? "http://127.0.0.1:4000").split(",").map(url => url.trim()).filter(Boolean);
 const apiKey = () => process.env.LLM_API_KEY ?? (process.env.LLM_API_KEY_FILE ? readFileSync(process.env.LLM_API_KEY_FILE, "utf8").trim() : "");
 
-/** One completion on a role's current model; returns the assistant text. `session` keeps one conversation's cache warm on one account. */
-export async function complete(input: { role: Role; messages: ChatMessage[]; session?: string; maxTokens?: number }): Promise<string> {
+/** One completion on a role's current model; returns the assistant text. `session` keeps one conversation's cache warm on
+ *  one account; `signal` ends a call its caller stopped waiting for. */
+export async function complete(input: { role: Role; messages: ChatMessage[]; session?: string; maxTokens?: number; signal?: AbortSignal }): Promise<string> {
   const { model, thinking } = await roleChoice(input.role);
   const body = JSON.stringify({
     model,
@@ -65,6 +69,7 @@ export async function complete(input: { role: Role; messages: ChatMessage[]; ses
           ...(input.session ? { "x-session-id": input.session } : {}),
         },
         body,
+        ...(input.signal ? { signal: input.signal } : {}),
       });
     } catch (error) {
       lastError = error;

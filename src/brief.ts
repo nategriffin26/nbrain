@@ -1,9 +1,9 @@
-// The brief: what an agent reads at the start of a task, built per call and kept near 1,500 tokens. In order: the rules
-// for this kind of work (the caller's profile lines under `## Always`, then the lines nearest the task), the project's
-// slice of now.md (with no project, all of it, nearest first), up to three strong record results for the task (so an
-// agent does not redo what was already done or misread what was already settled), and at most three things worth
-// loading (skills and styles, then the library cards of strong bookmarks and saved pages), each with how. When it runs
-// long, the near lines go first, then the other now blocks, then the record results, then the tail of the project's
+// The brief: what an agent reads at the start of a task, built per call and kept under 1,500 tokens. In order: the rules
+// for this kind of work (the caller's profile lines under `## Always`, then the lines a model picks for the task), the
+// project's block of now.md (with no block for the project, the one block the model picks, or none), up to three strong
+// record results for the task (so an agent does not redo what was already done or misread what was already settled),
+// and at most three things worth loading (skills and styles, then the library cards of strong bookmarks and saved
+// pages), each with how. When it runs long, the picked lines go first, then the record results, then the tail of the
 // block; Always lines and pointers stay.
 // `nbrain brief` asks memory-mcp for one over HTTP, so the token's scopes apply.
 import { readFile } from "node:fs/promises";
@@ -12,74 +12,89 @@ import { basename } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Pool } from "pg";
+import * as z from "zod";
 import { BRAND, OWNER, ZONE } from "./config.js";
-import { type NowBlock, readNow, readProfile } from "./context/profile.js";
+import { type NowBlock, type ProfileLine, readNow, readProfile } from "./context/profile.js";
 import { type Agent, sourcesFor } from "./mcp/types.js";
 import { search } from "./memory/search.js";
-import { embed } from "./memory/store.js";
-import { sha256 } from "./memory/text.js";
+import { complete, replyJson } from "./models.js";
 import { catalog } from "./skills/library.js";
 
 /** 1,500 tokens: real briefs run ~3.8 characters a token (o200k). */
 export const BUDGET = 5600;
-const NEAR = 40;
+/** Profile lines a brief shows beyond the Always ones. Filling the budget by embedding nearness (up to 40 lines) gave
+ *  briefs where half the lines were other projects' catalog entries, while a line the task needed ranked past the cut. */
+export const PICKED = 12;
 const POINTERS = 3;
 const EARLIER = 3;
 const QUOTE = 160;
 /** Characters of the task a search gets. */
 const QUERY = 300;
+/** A brief is waited on: the pick gives up after this and the brief goes out without it. */
+const PICK_DEADLINE = 10_000;
 /** Record sources that are work on a project (a session, a bot chat, research, a saved page): ahead of texts and mail
  *  when the brief knows the project. */
 const WORK_RECORD = ["omp", "chat", "research", "saved"];
-/** Profile lines are ranked by embedding and fill what room the budget leaves, nearest first. Each line's score is its
- *  nearness to the task less its average nearness to the other lines (its hubness), or the same few broad lines (a
- *  project list, a home folder) rank high for every task. No floor: on real tasks a floor left briefs at a third of
- *  their room, and a blind judge missed the lines it dropped. */
-const INSTRUCTION = `Instruct: Given a task an agent is about to do for ${OWNER.name}, find the rules, preferences and facts about ${OWNER.them} that matter for doing it well\nQuery: `;
 const VISUAL = /\b(ui|ux|css|html|layout|design|visual|screens?|pages?|dashboards?|components?|styles?|styling|themes?|colou?rs?|fonts?|typography|landing|website|app icon|mockups?|figma|tailwind|swiftui)\b/i;
+/** The model reads every profile line, so a line that bears on the task without sharing its words (the phone his apps
+ *  must work on, for a phone-app feature) is found. */
+const PICK = `You choose what an agent should be told about ${OWNER.name} before a task. You get the task, the profile lines about ${OWNER.them} (numbered; each with its file and the day it was written), and sometimes the blocks of what is in flight this week.
+Pick the lines that would change how the agent does this task: a preference or decision it would otherwise get wrong, or a fact about ${OWNER.them}, ${OWNER.their} setup or ${OWNER.their} projects that the task needs. Leave out lines about other projects, lines that only state general good practice, and lines whose subject the task never touches. When two lines disagree, keep only the later one. Pick at most ${PICKED}, most important first; an empty list is a good answer when none bear on it.
+When blocks are given, pick the one block that is about this task's own work, or none.
+Answer with JSON only: {"lines": [numbers], "block": "block name" or null}`;
 
 export interface BriefInput { task: string; project?: string }
 export interface BriefParts {
   always: string[];
-  /** Nearest first. */
-  near: string[];
-  /** now.md's blocks, the project's (or the nearest) first. */
-  now?: { day?: string; blocks: { name: string; lines: string[] }[] };
+  /** The profile lines picked for the task, most important first. */
+  picked: string[];
+  /** now.md's block for the task. */
+  now?: { day?: string; name: string; lines: string[] };
   /** Strong record results for the task, one line each. */
   earlier: string[];
   pointers: string[];
 }
 
-/** The brief as markdown within `budget` characters. Room goes first to the pointers and Always lines, then the first
- *  now block, then what came before on this in the record, then the other now blocks (where things stand beats one more
- *  rule: a blind judge missed the week's blocks when near lines took their room), then the near lines; each section
- *  keeps its own order. */
+/** The brief as markdown within `budget` characters. Room goes first to the pointers and Always lines, then the now
+ *  block, then what came before on this in the record, then the picked lines; each section keeps its own order. */
 export function compose(parts: BriefParts, budget = BUDGET): string {
   const rules = `## ${OWNER.name}'s rules for this work`, earlier = "## Earlier on this", load = "## Worth loading";
-  const now = `## Now${parts.now?.day ? ` (${parts.now.day})` : ""}`;
-  const blocks = parts.now?.blocks ?? [];
-  const kept = new Map<string, string[]>([rules, ...blocks.map(block => `### ${block.name}`), earlier, load].map(heading => [heading, []]));
-  let used = 0, nowShown = false;
+  const now = parts.now ? `## Now${parts.now.day ? ` (${parts.now.day})` : ""}\n\n### ${parts.now.name}` : "## Now";
+  const kept = new Map<string, string[]>([rules, now, earlier, load].map(heading => [heading, []]));
+  let used = 0;
   const add = (heading: string, line: string) => {
-    const lines = kept.get(heading)!, block = heading.startsWith("###");
-    const cost = line.length + 1 + (lines.length ? 0 : heading.length + 2) + (block && !nowShown ? now.length + 2 : 0);
+    const lines = kept.get(heading)!;
+    const cost = line.length + 1 + (lines.length ? 0 : heading.length + 2);
     if (used + cost > budget) return;
     lines.push(line);
     used += cost;
-    nowShown ||= block;
   };
   for (const line of parts.pointers.slice(0, POINTERS)) add(load, line);
   for (const line of parts.always) add(rules, `- ${line}`);
-  for (const line of blocks[0]?.lines ?? []) add(`### ${blocks[0]!.name}`, line);
+  for (const line of parts.now?.lines ?? []) add(now, line);
   for (const line of parts.earlier.slice(0, EARLIER)) add(earlier, line);
-  for (const block of blocks.slice(1)) for (const line of block.lines) add(`### ${block.name}`, line);
-  for (const line of parts.near.slice(0, NEAR)) add(rules, `- ${line}`);
-  let nowRendered = false;
-  return [...kept].filter(([, lines]) => lines.length).map(([heading, lines]) => {
-    const lead = heading.startsWith("###") && !nowRendered ? `${now}\n\n` : "";
-    nowRendered ||= lead !== "";
-    return `${lead}${heading}\n${lines.join("\n")}`;
-  }).join("\n\n");
+  for (const line of parts.picked.slice(0, PICKED)) add(rules, `- ${line}`);
+  return [...kept].filter(([, lines]) => lines.length).map(([heading, lines]) => `${heading}\n${lines.join("\n")}`).join("\n\n");
+}
+
+const Pick = z.object({ lines: z.array(z.number().int()), block: z.string().nullable().optional() });
+
+/** A pick reply as indices into the `lines` offered (numbered from 1) and one of the `blocks` offered by name: numbers
+ *  outside the list, repeats and unknown block names are dropped, and at most PICKED lines are kept. */
+export function readPick(reply: string, lines: number, blocks: readonly string[]): { lines: number[]; block?: string } {
+  const answer = Pick.parse(replyJson(reply));
+  const indices = [...new Set(answer.lines)].filter(number => number >= 1 && number <= lines).map(number => number - 1).slice(0, PICKED);
+  const block = blocks.find(name => name.toLowerCase() === answer.block?.trim().toLowerCase());
+  return { lines: indices, ...(block ? { block } : {}) };
+}
+
+/** The profile lines and the now block a model says bear on the task. */
+async function pick(task: string, project: string | undefined, lines: readonly ProfileLine[], blocks: readonly NowBlock[]) {
+  const listed = lines.map((line, at) => `${at + 1}. (${line.file}${line.day ? `, ${line.day}` : ""}) ${line.text}`).join("\n");
+  const offered = blocks.map(block => `- ${block.name}: ${block.lines[0]?.replace(/^- /, "") ?? ""}`).join("\n");
+  const content = `Task: ${task}${project?.trim() ? `\nProject: ${project.trim()}` : ""}\n\nProfile lines:\n${listed}${offered ? `\n\nBlocks:\n${offered}` : ""}`;
+  const reply = await complete({ role: "brief", maxTokens: 200, signal: AbortSignal.timeout(PICK_DEADLINE), messages: [{ role: "system", content: PICK }, { role: "user", content }] });
+  return readPick(reply, lines.length, blocks.map(block => block.name));
 }
 
 const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir()).replace(/\/+$/, "");
@@ -103,17 +118,6 @@ export function sortFound<T extends { id: string; source: string }>(found: reado
   return { earlier: found.filter(each => !carded.has(each.id)).sort((a, b) => rank(a) - rank(b)), cards: found.filter(each => carded.has(each.id)) };
 }
 
-const vectors = new Map<string, number[]>();
-/** Embeddings, kept by text hash: profile lines and now blocks change at most daily, so a brief embeds little more than
- *  its task. A brief is waited on, so what is missing is embedded urgently, under one deadline. */
-async function embedded(texts: readonly string[]): Promise<number[][]> {
-  const missing = [...new Set(texts.filter(text => !vectors.has(sha256(text))))];
-  if (missing.length) (await embed(missing, { urgent: true })).forEach((vector, at) => vectors.set(sha256(missing[at]!), vector));
-  return texts.map(text => vectors.get(sha256(text))!);
-}
-// unit vectors: the dot product is the cosine
-const cosine = (a: readonly number[], b: readonly number[]) => a.reduce((sum, value, at) => sum + value * b[at]!, 0);
-
 /** `to`: only record items dated before it (the A/B cuts the record at a past task's start); not a tool input. */
 export async function brief(agent: Agent, input: BriefInput, pool: Pool, { to }: { to?: string } = {}): Promise<string> {
   const task = input.task.trim();
@@ -121,19 +125,19 @@ export async function brief(agent: Agent, input: BriefInput, pool: Pool, { to }:
   const { day, blocks } = readNow(agent.scopes);
   const rest = profile.filter(line => !line.always);
   const matched = projectBlock(blocks, input.project);
-  const candidates = matched ? [] : blocks;
   const sources = sourcesFor(agent);
   // searches get the task's opening: the local cross-encoder search had before its judge marked the explainer skill weak
   // for a 1,300-character nTop request and strong for its first 300 characters
   const query = task.length <= QUERY ? task : task.slice(0, task.lastIndexOf(" ", QUERY));
   const cut = to ? { to } : {};
-  // without the embeddings (failed, or past their deadline) the profile and now keep their own order
-  const nearness = embedded([`${INSTRUCTION}${task}`, ...rest.map(line => line.text), ...candidates.map(block => [block.name, ...block.lines].join("\n"))]).catch((error: unknown) => {
-    console.warn(`${new Date().toISOString()} embed: ${error instanceof Error ? error.message : String(error)}`);
+  // with no block for the project the model may pick one: every block, shown whole, took up to 90% of the budget on
+  // tasks the project's block missed (a new repo, a worktree, "chef-design-lab" against "chef desk")
+  const picking = pick(task, input.project, rest, matched ? [] : blocks).catch((error: unknown) => {
+    console.warn(`${new Date().toISOString()} brief pick: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   });
-  const [vectorsFound, { skills }, skillHits, record] = await Promise.all([
-    nearness,
+  const [chosen, { skills }, skillHits, record] = await Promise.all([
+    picking,
     catalog(),
     search(pool, { query, source: ["skill"], limit: POINTERS, ...cut }),
     // library cards come from this search too: a card search of their own judged 30 more hits and found the same cards on
@@ -141,19 +145,10 @@ export async function brief(agent: Agent, input: BriefInput, pool: Pool, { to }:
     search(pool, { query, limit: 10, ...cut, ...(sources ? { source: sources.filter(source => source !== "skill") } : {}) }),
   ]);
 
-  let near = rest.map(line => line.text);
-  // the project's block alone; with no project, every block, nearest first, the far ones only as room allows
-  let ranked = matched ? [matched] : candidates;
-  if (vectorsFound) {
-    const [taskVector, ...known] = vectorsFound;
-    const lineVectors = known.slice(0, rest.length), blockVectors = known.slice(rest.length);
-    near = rest.map((line, at) => {
-      const hub = lineVectors.reduce((sum, other) => sum + cosine(lineVectors[at]!, other), 0) / lineVectors.length;
-      return { text: line.text, score: cosine(taskVector!, lineVectors[at]!) - hub };
-    }).sort((a, b) => b.score - a.score).map(line => line.text);
-    if (!matched) ranked = candidates.map((block, at) => ({ block, score: cosine(taskVector!, blockVectors[at]!) })).sort((a, b) => b.score - a.score).map(each => each.block);
-  }
-  const now = ranked.length ? { ...(day ? { day } : {}), blocks: ranked.map(block => ({ name: block.name, lines: block.lines })) } : undefined;
+  // without the pick (failed, or past its deadline) the profile keeps its own order and no other project's block shows
+  const picked = chosen ? chosen.lines.map(at => rest[at]!.text) : rest.map(line => line.text);
+  const block = matched ?? blocks.find(each => each.name === chosen?.block);
+  const now = block ? { ...(day ? { day } : {}), name: block.name, lines: block.lines } : undefined;
 
   const found = record.results.filter(result => result.strength === "strong" && result.source !== "skill");
   const ids = found.map(result => result.id);
@@ -178,7 +173,7 @@ export async function brief(agent: Agent, input: BriefInput, pool: Pool, { to }:
     ...shown.map(entry => `- ${entry.path} (${entry.kind}${entry.default ? ", the default" : ""}): ${short(entry.description.split(/(?<=[.!?])\s/)[0]!)} Load: skill_get {"name":"${entry.path}"}`),
     ...split.cards.map(result => card.get(result.id)!).map(each => `- ${short(each.what)} (${each.kind}${each.status === "new" ? "" : `, ${each.status}`}) Load: fetch {"id":"${each.id}"}`),
   ];
-  return compose({ always: profile.filter(line => line.always).map(line => line.text), near, ...(now ? { now } : {}), earlier, pointers });
+  return compose({ always: profile.filter(line => line.always).map(line => line.text), picked, ...(now ? { now } : {}), earlier, pointers });
 }
 
 type OmpServers = Record<string, { url?: string; headers?: Record<string, string> }>;
