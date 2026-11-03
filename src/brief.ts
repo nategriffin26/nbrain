@@ -131,7 +131,7 @@ export async function brief(agent: Agent, input: BriefInput, pool: Pool, { to }:
   const query = task.length <= QUERY ? task : task.slice(0, task.lastIndexOf(" ", QUERY));
   const cut = to ? { to } : {};
   // with no block for the project the model may pick one: every block, shown whole, took up to 90% of the budget on
-  // tasks the project's block missed (a new repo, a worktree, "chef-design-lab" against "chef desk")
+  // tasks the project's block missed (a new repo, a worktree, a repo named apart from its block)
   const picking = pick(task, input.project, rest, matched ? [] : blocks).catch((error: unknown) => {
     console.warn(`${new Date().toISOString()} brief pick: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;

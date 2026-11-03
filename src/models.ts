@@ -1,7 +1,8 @@
 // The brain's model calls (records extraction, the curator, now.md, capture enrichment, image descriptions) go to an
 // OpenAI-compatible chat endpoint: LLM_URLS, tried in order (the next when one can't be reached), with the key in
 // LLM_API_KEY or the file LLM_API_KEY_FILE. Each call names its role; the role's model and thinking come from
-// brain.model_roles when a row exists, else MODEL_<ROLE> ("model" or "model@thinking"), else the seed.
+// brain.model_roles when a row exists, else MODEL_<ROLE> ("model" or "model@thinking"), else the seed. memory-mcp never
+// holds DATABASE_URL (bin/run-memory-mcp.sh), so the brief's role there comes from MODEL_BRIEF or the seed.
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { BRAND } from "./config.js";
@@ -27,9 +28,11 @@ let pool: pg.Pool | undefined;
 
 /** A role's current model and thinking. */
 export async function roleChoice(role: Role): Promise<Choice> {
-  pool ??= new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
-  const row = (await pool.query<Choice>("SELECT model, thinking FROM brain.model_roles WHERE role=$1", [role])).rows[0];
-  if (row) return row;
+  if (process.env.DATABASE_URL) {
+    pool ??= new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
+    const row = (await pool.query<Choice>("SELECT model, thinking FROM brain.model_roles WHERE role=$1", [role])).rows[0];
+    if (row) return row;
+  }
   const [model, thinking] = (process.env[`MODEL_${role.toUpperCase()}`] ?? "").split("@");
   return model ? { model, thinking: (thinking as Thinking | undefined) ?? "off" } : ROLE_SEEDS[role];
 }
