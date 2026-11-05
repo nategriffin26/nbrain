@@ -27,4 +27,5 @@
 - Facts tagged private stay out of the life profile and out of every result surfaced into a bot's start-of-task context.
 - Newest wins at every read-out: notes, the life profile and the start-of-task summary show the most recently recorded state. A note can supersede or retract an earlier one, and superseded notes drop out of every derived surface. A correction that only sits beside the false note is rejected, because profiles keep showing the stale fact until rebuilt.
 - A full pass over the whole message history must finish within two hours; correct but slower is not done. Choose the optimization from measured cost.
+- A visual style is Google's DESIGN.md as published (linted with `@google/design.md` on save), with `components/`, `blocks/` and `screens/` beside it. Don't invent a token format or fork the spec; values the spec has no token for go in its prose.
 - Defects that can feed false or private content into a bot's start-of-task context (attribution, correction and retraction, privacy tagging) outrank search relevance, deduplication and encoding polish.

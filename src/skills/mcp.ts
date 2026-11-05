@@ -20,7 +20,7 @@ const CACHE = { ttlMs: 60_000, cacheScope: "private" } as const;
 const INSTRUCTION_CHARS = 1500;
 
 const reads = (agent: Agent) => has(agent, "work") || has(agent, "life");
-const label = (entry: Entry) => `${entry.path} (${entry.kind}${entry.default ? `, the default when no ${entry.kind} is named` : ""})`;
+const label = (entry: Entry) => `${entry.path} (${entry.kind}${entry.design ? ", design system" : ""}${entry.default ? `, the default when no ${entry.kind} is named` : ""})`;
 
 /** A refusal the agent can act on comes back as its message; anything else is the server's failure. */
 async function answer(work: () => Promise<unknown>): Promise<unknown> {
@@ -42,18 +42,20 @@ async function get(call: Call, args: Record<string, unknown>) {
   if (!name) {
     const { skills, problems } = await catalog();
     return {
-      skills: skills.map(entry => ({ path: entry.path, kind: entry.kind, name: entry.name, description: entry.description, default: entry.default, updated: entry.updated, author: entry.author, files: entry.files })),
+      skills: skills.map(entry => ({ path: entry.path, kind: entry.kind, name: entry.name, description: entry.description, default: entry.default, design: entry.design, updated: entry.updated, author: entry.author, files: entry.files })),
       ...(problems.length ? { problems } : {}),
       load: 'skill_get {"name":"<path>"} loads one; at most 1-3 per task.',
     };
   }
   if (typeof args.file === "string" && args.file) return fileOf(call, name, args.file, page);
-  const { entry, body, files } = await getSkill(name);
+  const { entry, body, files, design } = await getSkill(name);
   const part = pageOf(body, page);
+  const sheet = design ? pageOf(design.text) : undefined;
   return {
     path: entry.path, uri: entry.uri, kind: entry.kind, frontmatter: entry.frontmatter, body: part.text, ...(part.pages > 1 ? { page: part.page, pages: part.pages } : {}),
+    ...(design && sheet ? { design: sheet.text, ...(sheet.pages > 1 ? { design_pages: sheet.pages } : {}), components: design.components, blocks: design.blocks } : {}),
     files, ...(call.local ? { dir: entry.dir } : {}),
-    open: 'skill_get {"name":"' + entry.path + '","file":"<path>"} opens a file; references in the body are relative to the skill.',
+    open: 'skill_get {"name":"' + entry.path + '","file":"<path>"} opens a file' + (design ? " (a component or block doc, a screenshot, or DESIGN.md with page)" : "") + "; references in the body are relative to the skill.",
   };
 }
 

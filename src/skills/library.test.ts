@@ -45,3 +45,70 @@ it("updates only from the SKILL.md the writer read", async () => {
   await expect(saveSkill({ ...skill, base }, "omp", false)).rejects.toThrow(/changed since you read it/);
   expect((await getSkill("skill://skills/explainer/SKILL.md")).entry.author).toBe("grok");
 });
+
+const design = (textColor = "{colors.surface}", primary = '  primary: "{colors.gray-900}"\n') => `---
+version: alpha
+name: Ink
+colors:
+  gray-0: "#FFFFFF"
+  gray-900: "#18181B"
+  surface: "{colors.gray-0}"
+${primary}typography:
+  body-md: { fontFamily: Inter, fontSize: 15px, fontWeight: 400, lineHeight: 1.4 }
+rounded:
+  full: 9999px
+spacing:
+  unit: 4px
+components:
+  button-primary:
+    backgroundColor: "{colors.gray-900}"
+    textColor: "${textColor}"
+    rounded: "{rounded.full}"
+---
+
+## Overview
+
+Ink on paper.
+
+## Colors
+
+- **surface** (#FFFFFF): the page. Why: paper.
+`;
+const ink = { name: "ink", kind: "style" as const, description: "Ink on paper. Use for reading pages.", body: "# Ink\n\nRead DESIGN.md first." };
+const shot = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]).toString("base64");
+
+it("serves a design system's DESIGN.md with each component's and block's own doc summary and screenshots", async () => {
+  await saveSkill({ ...ink, files: [
+    { path: "DESIGN.md", content: design() },
+    { path: "components/button.md", content: "# Button\n\nThe one action that moves the screen forward. Use a link for anything else.\n" },
+    { path: "components/button/default.png", base64: shot }, { path: "components/button/pressed.png", base64: shot },
+    { path: "components/button-group.md", content: "# Button group\n\nTwo or three related actions.\n" },
+    { path: "components/button-group/default.png", base64: shot },
+    { path: "blocks/composer.md", content: "# Composer\n\nWhere a message is written.\n" }, { path: "blocks/composer.png", base64: shot },
+  ] }, "omp", false);
+  const { entry, design: served } = await getSkill("styles/ink");
+  expect(entry.design).toBe(true);
+  expect(served!.text).toBe(design());
+  expect(served!.components).toEqual([
+    { name: "button", doc: "components/button.md", summary: "The one action that moves the screen forward.", images: ["components/button/default.png", "components/button/pressed.png"] },
+    { name: "button-group", doc: "components/button-group.md", summary: "Two or three related actions.", images: ["components/button-group/default.png"] },
+  ]);
+  expect(served!.blocks).toEqual([{ name: "composer", doc: "blocks/composer.md", summary: "Where a message is written.", images: ["blocks/composer.png"] }]);
+  expect((await getSkill("explainer")).design).toBeUndefined();
+});
+
+it("refuses a DESIGN.md the linter fails, leaving the saved style as it was", async () => {
+  await expect(saveSkill({ ...ink, name: "smudge", files: [{ path: "DESIGN.md", content: design("{colors.nope}") }] }, "omp", false)).rejects.toThrow(/\{colors\.nope\} does not resolve/);
+  await expect(getSkill("styles/smudge")).rejects.toThrow(SkillError);
+  const commits = execFileSync("git", ["-C", context, "rev-list", "--count", "HEAD"], { encoding: "utf8" });
+  const base = (await getSkill("styles/ink")).files.find(file => file.path === "SKILL.md")!.digest;
+  await expect(saveSkill({ ...ink, base, files: [{ path: "DESIGN.md", content: design("{colors.nope}") }] }, "omp", false)).rejects.toThrow(SkillError);
+  expect(readFileSync(`${context}/styles/ink/DESIGN.md`, "utf8")).toBe(design());
+  expect(execFileSync("git", ["-C", context, "rev-list", "--count", "HEAD"], { encoding: "utf8" })).toBe(commits);
+});
+
+it("returns the linter's warnings, but not for tokens no component references", async () => {
+  const saved = await saveSkill({ ...ink, name: "ash", files: [{ path: "DESIGN.md", content: design(undefined, '  text-muted: "#71717A"\n') }] }, "omp", false);
+  expect(saved.warnings.some(warning => warning.includes("No 'primary' color"))).toBe(true);
+  expect(saved.warnings.filter(warning => warning.includes("never referenced"))).toEqual([]);
+});

@@ -66,7 +66,7 @@ What a coding agent gets for "cut the 0.5 release" in the nbrain repo, for a mad
 | `correct` | write | Fix a profile line, record, card or now; applied within a minute, and it sticks |
 | `private` | write | Hide an item, thread or session; private sessions stay out of listing, search, fetch and SQL |
 | **Skills and styles** | | |
-| `skill_get` | work, life | The catalog, or one skill or style with a manifest of its files |
+| `skill_get` | work, life | The catalog, or one skill or style with a manifest of its files; a design system also with its DESIGN.md, components and blocks |
 | `skill_save` | write | Add or update a skill or style; an update names the digest of the version it read |
 
 A token sees only the tools its scopes allow. `search` and `fetch` also answer in the shape ChatGPT deep research reads. The server also offers the brief as a prompt, every skill file as a `skill://` resource, and the MCP Skills extension. Tool names and inputs are a stable contract.

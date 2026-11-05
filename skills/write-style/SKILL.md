@@ -1,68 +1,96 @@
 ---
 name: write-style
-description: How to capture a look the owner approved as a style in their brain, so later work can be done "in this style" or follow it by default. Use it whenever the owner says "save this look", "make this a style", "remember this design", "this is how my UIs should look", "use this style by default", "add this to my styles", or asks you to capture the visual language, design philosophy or feel of something you built together. Read it before calling skill_save with kind style. For a process or workflow, use write-skill instead.
+description: How to capture a look as a style in the owner's brain, so later work can be done "in this style" or follow it by default. A visual style is a design system an agent can build from (Google's DESIGN.md with tokens and the reason for each, component docs with a screenshot per state, blocks, and rules), proven by rebuilding a real screen from it. Use it whenever the owner says "save this look", "make this a style", "make a design system from X", "remember this design", "this is how my UIs should look", "use this style by default", or asks you to capture the visual language of something you built or a product they named. Read it before calling skill_save with kind style. For a process or workflow, use write-skill instead.
 metadata:
   kind: skill
   source: nbrain built-in
 ---
 
-# Write a style from finished work
+# Write a style
 
-A style is how the owner's things should look and feel: a taste thesis, a few principles with their reasons, exact tokens, the defaults to refuse, and real screenshots. Agents load it when the owner says "do it in the X style", and the default style when the owner names none. It works only if it is specific enough that two agents following it would produce work the owner recognises as theirs.
+A style is how the owner's things should look. A **visual style** is a small design system: exact values with the reason for each, the components built from them, the sections built from the components, and the rules that hold it together. Agents load it when the owner says "do it in the X style", and the default style when the owner names none.
 
-Example requests that mean "use this":
+Values alone are not enough. An agent given only colours and fonts builds a screen that is consistent and still wrong: it reassembles the parts the way the average product does. What makes a screen right is in the judgment behind the values, in how the components behave in each state, and in how they are put together into sections. A style carries all four layers.
+
+A **prose style** (how writing reads, such as an essay voice) has no DESIGN.md; it is a SKILL.md with principles and examples. The rest of this guide is about visual styles.
+
+Example requests:
 - "Save this look as a style."
-- "This is how my dashboards should look. Make it the default."
-- "Remember the design of Helm so the next thing matches."
-- "Add what we figured out about the typography to the helm style."
-- "Capture the feel of this page, I want to reuse it."
+- "Make a design system from Stripe Press so my site reads like it."
+- "Add what we figured out about the typography to the grok-bot style."
+- "This is how my iPhone apps should look. Make it the default for native apps."
 
 ## When not to
 
-- **The look is not settled.** Capture what the owner approved, after the work, from the real artifact. A style written from taste words before anything was built is a mood board, and models fill mood words with the average ("clean" and "modern" give the generic default).
-- **It is a procedure.** How to build, test or ship something goes in a skill: load `write-skill`.
+- **The look is not settled.** Capture what the owner approved or named, from the real artifact. A style written from taste words before anything exists is a mood board, and models fill mood words with the average.
+- **It is a procedure.** How to build, test or ship something is a skill: load `write-skill`.
 - **It differs from an existing style in a detail.** Update that style rather than fork it.
 
-## The bar for a saved style
+## The shape
 
-1. **From the real artifact.** Tokens are read from the code (CSS variables, theme file, Tailwind config), not eyeballed from a screenshot; screenshots are of the real rendered thing. Why: a value guessed from pixels drifts, and drift is the generic default creeping back.
-2. **The owner's words, quoted.** What they praised and every correction ("less padding", "the grey is too blue"), verbatim with dates. Why: corrections are the taste; they mark exactly where the default was wrong.
-3. **A thesis in one line.** The idea every decision serves ("dense and calm: information first, chrome last"). Why: principles conflict at the edges; the thesis settles them.
-4. **3-7 principles, each rule + why + value.** More dilutes; practitioners who encode taste well pick two or three to stress per project. Why: a rule with its reason is applied correctly where the rule did not foresee.
-5. **Exact tokens, compactly.** Hex with roles, type families with roles and a scale, spacing grid, radii, shadows, motion durations and easing; about 30-60 lines. Why: exact values up front beat iterating away from defaults afterwards; long brand prose does not help.
-6. **Named anti-patterns.** The specific generic defaults this style refuses, so an agent can catch itself. Why: a style that only says what to do leaves every unsaid choice at the default.
-7. **1-3 screenshots with what to steal.** In `assets/`, each with one line on what to take (rhythm, density, hierarchy) and what not to copy (its content). Why: images carry spacing and hierarchy that tokens cannot; exemplars also get copied verbatim, so say which parts are the lesson.
-8. **A plan → build → screenshot-critique checklist.** Why: a screenshot checked against named rules catches drift a model will not notice in code; interaction states and motion need their own pass because one frame cannot show them.
-9. **150-400 lines.** The SKILL.md body; longer detail (full component specs, every token) goes in `references/`.
-10. **`default` only on the owner's word.** Set it only when they say this style is the one for that kind of work when they name none, and say in the description which kind of work ("UI and dashboards", "slides").
+```
+styles/<name>/
+  SKILL.md                     entry: when to use it, how to build with it, provenance (short)
+  DESIGN.md                    the design system, in Google's DESIGN.md format (github.com/google-labs-code/design.md)
+  components/<component>.md    one per component: when to use it, default variant, states, a good and a bad example
+  components/<component>/<state>.png   a screenshot of each state
+  blocks/<block>.md            a real section made from the components, with its markup and screenshot
+  blocks/<block>.png
+  screens/<screen>/            the proof: original.png, rebuild.png, the rebuild's source, notes.md
+  references/                  extraction output and sources, read only when a value is in doubt
+```
+
+**DESIGN.md** is the core, and it follows the open spec exactly: YAML tokens (`colors`, `typography`, `rounded`, `spacing`, `components`) plus prose sections in the spec's order (Overview, Colors, Typography, Layout, Elevation & Depth, Shapes, Components, Do's and Don'ts). Inside it:
+
+- **Primitives and semantic tokens in one map.** Raw values (`gray-900: "#18181B"`) and the tokens that say what each is for (`text-primary: "{colors.gray-900}"`). Components reference semantic tokens, never primitives.
+- **A reason for every semantic token**, in the section's prose: `- **text-muted** (#71717A): metadata and timestamps; dim enough that the message text leads, still 4.6:1 on the surface.` The reason is what lets an agent handle a case the style did not foresee.
+- **Values the spec has no token for** (shadows, motion, dark-mode pairs, blur) go in the prose of their section as exact values. Dark mode: colour tokens with a `-dark` suffix beside their light pair.
+- **Rules are the Do's and Don'ts section**: one sentence each with its reason after it. `- Do use one filled button per screen. Why: if everything is important, nothing is.` Write a rule when an agent gets something wrong: what it did, what was wanted, why.
+- **Undecided values are marked**: `ask the owner before choosing`. Otherwise an agent fills the gap with a guess and the guess becomes the style.
+
+**Components** document only what exists in the real product. A variant described but never built gets used anyway. Each states file is a screenshot of that state from the real product; where a state cannot be captured there, say so and show the rebuild's state, labelled.
+
+**Blocks** come from real screens: the sections the product keeps rebuilding (a message group, a composer, a book header). Each one names the components it uses, its layout values, its states, and carries its markup. A screen is a stack of blocks; a screen that needs a block the style lacks is a sign to ask before inventing one.
+
+## The bar
+
+1. **Values from the source, not from pixels.** Read them from the code (CSS variables, the theme, the app bundle, computed styles from a headless browser) or from the platform's own published values. A value eyeballed from a screenshot drifts, and drift is the generic default creeping back.
+2. **A reason for every choice.** Study the real product (its writing about itself, its designers' talks, how it behaves) and write why. Where the reason is your reading rather than the source's words, say so.
+3. **The owner's words, quoted.** What they praised and every correction, verbatim with dates, in the Overview.
+4. **Lint clean.** `npx @google/design.md lint DESIGN.md`: no errors. `skill_save` runs the same linter and refuses errors; read its warnings.
+5. **Proven by a blind rebuild.** An agent that sees only DESIGN.md (plus the screen's text content) rebuilds one real screen; compare its screenshot with the original side by side and as a pixel diff. Every difference is a gap in the style: fix DESIGN.md, components or blocks, never the rebuild, and rebuild again until the two match. Keep both screenshots in `screens/`.
+6. **Compact.** DESIGN.md about 150-400 lines; SKILL.md under 80. Long tables and raw extraction go in `references/`.
+7. **`default` only on the owner's word**, with the kind of work named in the description.
 
 ## Steps
 
 1. **Check what exists.** `skill_get` with no name. If a style covers this look, read it and go to "Updating".
-2. **Gather the trace.** From this session: the owner's requests and corrections about the look (verbatim, dated); the accepted artifact's paths; the files where its tokens live; the before/after of each correction.
-3. **Extract tokens from the code.** Every colour with its role (background, surface, text, muted text, border, accent, danger, focus…), type families and the scale actually used (size / line height / weight), the spacing steps actually used and their base unit, radii, shadows, motion durations and easing. Where the code has a value used once, ask whether it is the system or an accident; keep only the system.
-4. **Take 1-3 screenshots** of the accepted result that show the thesis best: the densest real screen, a detail of a component, an empty or error state. Real data, not lorem ipsum. Save them as PNG.
-5. **Write the style** following `references/template.md`: identity, thesis, principles, tokens, components and interactions, anti-patterns, visual references, checklist.
-6. **Name it** after the look or the project that defined it: `helm`, `quiet-dense`, `print-editorial`. Lowercase, hyphens.
-7. **Save** with `skill_save`: `kind: "style"`, `source` (the project path and session), `default: true` only if the owner said so, screenshots in `files` as `base64` or `from` (a local path, when you run on the owner's machine), long specs under `references/`.
-8. **Read it back as a stranger.** `skill_get` it and ask: given only this and a new brief, would an agent build something the owner recognises as this style, and avoid the corrections they had to make? If you can, build one small screen with it and compare the screenshot side by side with the reference.
-9. **Tell the owner** the style's name, its thesis, whether it is the default and for what, and the commit.
+2. **Extract.** Pull the values automatically from the real product: computed styles and CSS variables from a site, the bundled CSS of an app, the platform's published values for a native system. Save the raw output in `references/`.
+3. **Keep the system, drop the accidents.** A value used once is usually an accident; a value used everywhere is the system. Name primitives, then the semantic tokens over them.
+4. **Write the reasons.** For each semantic token, component and rule, why the product chose it. Read what its makers wrote; study how it behaves in use.
+5. **Document the components** the product actually uses, each with a screenshot per state (default, hover, pressed, focused, disabled, loading, empty, error: the ones that exist).
+6. **Name the blocks** from real screens and write each with its markup and screenshot.
+7. **Rebuild and compare** (bar 5) until the screenshots match. Note in `screens/<screen>/notes.md` what each round changed in the style.
+8. **Lint**, then **save** with `skill_save`: `kind: "style"`, `source`, every file in `files` (`from` a local path when you run on the owner's machine). Use `references/template.md` for SKILL.md, DESIGN.md, component and block files.
+9. **Tell the owner** the style's name, its one-line thesis, whether it is the default and for what, the before/after screenshots and the commit.
 
 ## Updating
 
 - Read the current style and pass its SKILL.md `digest` as `base`; saves without the current one are refused.
-- Merge: change the token or principle the new work proved wrong, add the new correction with its date, keep the rest. Never regenerate the whole style from memory: a rewrite drops the corrections that made it the owner's.
-- Replace a screenshot when the look moved, and update its "what to steal" line.
+- Merge: change the token, component or rule the new work proved wrong, add the correction with its date, keep the rest. Never regenerate a style from memory: a rewrite drops the corrections that made it the owner's.
+- Diff before saving: `npx @google/design.md diff old/DESIGN.md DESIGN.md` shows token-level changes and regressions.
+- Replace a screenshot when the look moved.
 
 ## Do not
 
-- Write "clean", "modern", "minimal", "sleek" without values; they mean the default.
-- Copy brand assets, logos or product copy into the style as things to reuse.
+- Write "clean", "modern", "minimal" or "sleek" without values; they mean the default.
+- Describe a component or variant the product does not have.
+- Copy logos, brand assets or product copy into the style as things to reuse.
 - Mix two styles in one piece of work, or load a style for work it is not about.
 - Mark a style default because you liked it.
 
 ## References
 
-- `references/template.md`: the style SKILL.md skeleton with a token block. Read it at step 5.
+- `references/template.md`: skeletons for SKILL.md, DESIGN.md, a component and a block. Read it at step 8, or before you start your first style.
 - `references/evidence.md`: the sources behind each rule. Read it when a rule here seems wrong for your case.
-- `examples/ledger.md`: a complete style written with this guide, with notes on why each part is there. Read it before your first style; do not reuse its values.
+- `examples/ledger/`: a complete small style in this shape, with notes on why each part is there. Do not reuse its values.

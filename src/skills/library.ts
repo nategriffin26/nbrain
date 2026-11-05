@@ -4,10 +4,13 @@
 //   skills/<name>/  styles/<name>/   the owner's, in the context repo ($BRAIN_CONTEXT); every save is a signed commit
 //   nbrain/<name>/                   built-ins shipped in this repo's skills/ (read-only): the guides for writing the others
 // Our extras live in frontmatter `metadata` (a string map, per the spec): kind, default, author, source, updated.
+// A visual style is a design system: DESIGN.md (Google's format, github.com/google-labs-code/design.md) beside SKILL.md,
+// with components/<name>.md and blocks/<name>.md and their screenshots. A style without DESIGN.md is a prose style.
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { lint } from "@google/design.md/linter";
 import YAML from "yaml";
 import { CONTEXT, ZONE } from "../config.js";
 import { commit } from "../context/git.js";
@@ -46,8 +49,16 @@ export interface Entry {
   updated?: string;
   author?: string;
   files: number;
+  /** Has a DESIGN.md: a visual style's design system. */
+  design: boolean;
   frontmatter: Frontmatter;
 }
+
+/** A component or block of a design system: its doc, the doc's first sentence, and its screenshots. */
+export interface Part { name: string; doc: string; summary: string; images: string[] }
+export interface Design { text: string; components: Part[]; blocks: Part[] }
+export const DESIGN = "DESIGN.md";
+const IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i;
 
 export const digestOf = (bytes: Buffer | string) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 export const uriOf = (path: string, file = "SKILL.md") => `skill://${path}/${file.split("/").map(encodeURIComponent).join("/")}`;
@@ -130,11 +141,37 @@ export function splitUri(uri: string): { path: string; file: string } | undefine
   return { path: `${match[1]}/${match[2]}`, file: decodeURIComponent(match[3]!) };
 }
 
-function entryOf(path: string, dir: string, frontmatter: Frontmatter, files: number): Entry {
+function entryOf(path: string, dir: string, frontmatter: Frontmatter, files: FileEntry[]): Entry {
   const metadata = frontmatter.metadata ?? {};
   return {
     path, uri: uriOf(path), dir, kind: metadata.kind === "style" || path.startsWith("styles/") ? "style" : "skill", name: frontmatter.name, description: frontmatter.description,
-    default: metadata.default === "true", ...(metadata.updated ? { updated: metadata.updated } : {}), ...(metadata.author ? { author: metadata.author } : {}), files, frontmatter,
+    default: metadata.default === "true", ...(metadata.updated ? { updated: metadata.updated } : {}), ...(metadata.author ? { author: metadata.author } : {}),
+    files: files.length, design: files.some(file => file.path === DESIGN), frontmatter,
+  };
+}
+
+/** `components/` or `blocks/` of a design system: each `<folder>/<name>.md`, with the images in `<folder>/<name>/` or
+ *  named `<folder>/<name>.<ext>`. */
+async function partsOf(dir: string, files: FileEntry[], folder: "components" | "blocks"): Promise<Part[]> {
+  const docs = files.filter(file => file.path.startsWith(`${folder}/`) && file.path.endsWith(".md") && file.path.split("/").length === 2);
+  const parts = await Promise.all(docs.map(async doc => {
+    const name = doc.path.slice(folder.length + 1, -".md".length);
+    const images = files.filter(file => IMAGE.test(file.path) && (file.path.startsWith(`${folder}/${name}/`) || file.path.startsWith(`${folder}/${name}.`))).map(file => file.path);
+    const lead = (await readFile(`${dir}/${doc.path}`, "utf8")).split(/\n\s*\n/).map(part => part.trim()).find(part => part && !part.startsWith("#")) ?? "";
+    return { name, doc: doc.path, summary: firstSentence(lead), images };
+  }));
+  return parts.sort((a, b) => (a.name < b.name ? -1 : 1));
+}
+
+/** What Google's linter finds wrong in a DESIGN.md: errors refuse a save, warnings are reported. orphaned-tokens is left
+ *  out: a style keeps primitives and semantic tokens that no component token references. */
+export function lintDesign(text: string): { errors: string[]; warnings: string[] } {
+  let findings;
+  try { findings = lint(text).findings; } catch (error) { return { errors: [`DESIGN.md does not parse: ${(error as Error).message}`], warnings: [] }; }
+  const say = (finding: (typeof findings)[number]) => `DESIGN.md${finding.path ? ` ${finding.path}` : ""}: ${finding.message}`;
+  return {
+    errors: findings.filter(finding => finding.severity === "error").map(say),
+    warnings: findings.filter(finding => finding.severity === "warning" && finding.rule !== "orphaned-tokens").map(say),
   };
 }
 
@@ -152,7 +189,7 @@ export async function catalog(): Promise<{ skills: Entry[]; problems: { path: st
         const { frontmatter } = parseSkill(await readFile(`${dir}/SKILL.md`, "utf8"));
         const wrong = problems(frontmatter, name);
         if (wrong.length) { bad.push({ path, problem: wrong.join("; ") }); continue; }
-        skills.push(entryOf(path, dir, frontmatter, (await manifest(path, dir)).length));
+        skills.push(entryOf(path, dir, frontmatter, await manifest(path, dir)));
       } catch (error) {
         bad.push({ path, problem: error instanceof SkillError ? error.message : (error as NodeJS.ErrnoException).code === "ENOENT" ? "no SKILL.md" : String(error) });
       }
@@ -161,15 +198,18 @@ export async function catalog(): Promise<{ skills: Entry[]; problems: { path: st
   return { skills, problems: bad };
 }
 
-/** One skill: its entry, body and every file with its digest. */
-export async function getSkill(name: string): Promise<{ entry: Entry; body: string; files: FileEntry[] }> {
+/** One skill: its entry, body and every file with its digest; a visual style also its DESIGN.md, components and blocks. */
+export async function getSkill(name: string): Promise<{ entry: Entry; body: string; files: FileEntry[]; design?: Design }> {
   const found = await locate(name);
   if (!found) throw new SkillError(`No skill or style "${name}". Call skill_get with no name for the catalog.`);
   const { frontmatter, body } = parseSkill(await readFile(`${found.dir}/SKILL.md`, "utf8"));
   const wrong = problems(frontmatter, basename(found.dir));
   if (wrong.length) throw new SkillError(`${found.path}/SKILL.md is invalid: ${wrong.join("; ")}`);
   const files = await manifest(found.path, found.dir);
-  return { entry: entryOf(found.path, found.dir, frontmatter, files.length), body, files };
+  const entry = entryOf(found.path, found.dir, frontmatter, files);
+  if (!entry.design) return { entry, body, files };
+  const [text, components, blocks] = await Promise.all([readFile(`${found.dir}/${DESIGN}`, "utf8"), partsOf(found.dir, files, "components"), partsOf(found.dir, files, "blocks")]);
+  return { entry, body, files, design: { text, components, blocks } };
 }
 
 const TYPES: Record<string, string> = {
@@ -278,6 +318,9 @@ export async function saveSkill(input: SaveInput, signer: string, local: boolean
     const total = [...after.values()].reduce((sum, size) => sum + size, 0);
     if (after.size > MAX_FILES) throw new SkillError(`${path} would have ${after.size} files; a skill holds at most ${MAX_FILES}.`);
     if (total > MAX_BYTES) throw new SkillError(`${path} would be ${total} bytes; a skill holds at most ${MAX_BYTES} (16 MiB).`);
+    const design = writes.get(DESIGN) ?? (after.has(DESIGN) ? await readFile(`${dir}/${DESIGN}`) : undefined);
+    const linted = design ? lintDesign(design.toString("utf8")) : { errors: [], warnings: [] };
+    if (linted.errors.length) throw new SkillError(`${path} not saved: fix DESIGN.md (npx @google/design.md lint DESIGN.md shows the same).\n${linted.errors.join("\n")}`);
 
     for (const rel of removes) {
       await rm(`${dir}/${rel}`);
@@ -288,13 +331,13 @@ export async function saveSkill(input: SaveInput, signer: string, local: boolean
     await writeFile(`${dir}/SKILL.md`, skillMd);
 
     const lines = body.split("\n").length;
-    const warnings = lines > BODY_LINES ? [`SKILL.md body is ${lines} lines; keep it under ${BODY_LINES} and move detail into references/ (compact skills beat comprehensive ones).`] : [];
+    const warnings = [...(lines > BODY_LINES ? [`SKILL.md body is ${lines} lines; keep it under ${BODY_LINES} and move detail into references/ (compact skills beat comprehensive ones).`] : []), ...linted.warnings];
     const id = await commit([path], `${input.kind} ${input.name}: ${current ? "updated" : "created"} by ${signer}`, signer);
     return { path, uri: uriOf(path), dir, created: !current, ...(id ? { commit: id } : {}), files: await manifest(path, dir), warnings };
   });
 }
 
-/** Validate a skill directory as a host would load it: frontmatter, name, limits and the body-length guidance. */
+/** Validate a skill directory as a host would load it: frontmatter, name, limits, the body-length guidance and DESIGN.md. */
 export async function checkDir(dir: string): Promise<{ problems: string[]; warnings: string[]; files: number; bytes: number; frontmatter?: Frontmatter }> {
   let text: string;
   try { text = await readFile(`${dir}/SKILL.md`, "utf8"); } catch { return { problems: [`no SKILL.md in ${dir}`], warnings: [], files: 0, bytes: 0 }; }
@@ -306,5 +349,7 @@ export async function checkDir(dir: string): Promise<{ problems: string[]; warni
   if (files.length > MAX_FILES) found.push(`${files.length} files; a skill holds at most ${MAX_FILES}`);
   if (bytes > MAX_BYTES) found.push(`${bytes} bytes; a skill holds at most ${MAX_BYTES}`);
   const lines = parsed.body.trimEnd().split("\n").length;
-  return { problems: found, warnings: lines > BODY_LINES ? [`body is ${lines} lines; keep SKILL.md under ${BODY_LINES} and move detail into references/`] : [], files: files.length, bytes, frontmatter: parsed.frontmatter };
+  const linted = files.some(file => file.path === DESIGN) ? lintDesign(await readFile(`${dir}/${DESIGN}`, "utf8")) : { errors: [], warnings: [] };
+  found.push(...linted.errors);
+  return { problems: found, warnings: [...(lines > BODY_LINES ? [`body is ${lines} lines; keep SKILL.md under ${BODY_LINES} and move detail into references/`] : []), ...linted.warnings], files: files.length, bytes, frontmatter: parsed.frontmatter };
 }

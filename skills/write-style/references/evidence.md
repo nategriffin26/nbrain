@@ -1,6 +1,16 @@
 # Evidence behind write-style
 
-Each rule in SKILL.md, the finding behind it, and where to read it. Gathered 2026-10-20.
+Each rule in SKILL.md, the finding behind it, and where to read it. Gathered 2026-10-20; layers, format and extraction 2026-11-05.
+
+## Layers: tokens, components, blocks, rules
+
+- Values alone came back "very fast, clean, and completely wrong": a design system an agent can follow is built in layers (primitives; semantic tokens that say what each value is for; component docs with when-to-use, default variant, a good and a bad example and every state; blocks from real screens; rules as one sentence plus its reason). Document only what exists: a described but unbuilt variant gets used. Mark undecided values so the agent asks. https://x.com/_heyrico/status/2116953958279479760
+- DESIGN.md (Google Labs, open spec, alpha): YAML tokens (colors, typography, rounded, spacing, components, with `{path}` references) plus prose rationale in fixed sections, ending in Do's and Don'ts; the CLI `@google/design.md` lints (broken references, WCAG contrast, section order) and diffs two versions at token level. Shadows, motion and dark mode have no token yet; unknown sections are kept. https://github.com/google-labs-code/design.md (docs/spec.md, read 2026-11-05)
+
+## Extract, then judge, then prove
+
+- Extractors read a live page's computed styles into tokens and a DESIGN.md (designlang, https://www.npmjs.com/package/designlang; dembrandt, https://github.com/dembrandt/dembrandt), and libraries ship ready analyses of well-known products (Refero Styles, https://styles.refero.design/; getdesign.md, https://github.com/VoltAgent/awesome-design-md), which say themselves that roles are interpreted and examples reconstructed. Either gives values, not why they were chosen, so a style still needs the reasons written from studying the product.
+- Rebuild-and-compare loops (build from the spec, screenshot, diff against the design, fix) are how design-to-code tools reach fidelity; here the fix goes into the style, so the next agent inherits it. https://x.com/athrix_codes/status/2117596718019789205
 
 ## Rules with reasons and exact values
 

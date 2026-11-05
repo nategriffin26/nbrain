@@ -17,6 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@google/design.md": "0.4.0",
     "@hono/node-server": "^2.1.5",
     "@modelcontextprotocol/sdk": "1.30.0",
     "defuddle": "^0.19.5",
