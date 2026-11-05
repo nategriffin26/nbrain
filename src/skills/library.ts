@@ -30,6 +30,9 @@ export const MAX_BYTES = 16 * 1024 * 1024;
 /** Agent Skills recommends a SKILL.md body under 500 lines; SkillsBench measured compact/standard skills at +19-21pp
  *  and comprehensive ones at +0.7pp (arxiv.org/pdf/2602.12670). */
 export const BODY_LINES = 500;
+/** skill_get answers a design system with its whole DESIGN.md; past about 30 KB the answer outgrows what agent hosts show
+ *  in one tool result (omp cuts the middle at about 50 KB), and the rules at its end are the part that gets cut. */
+export const DESIGN_BYTES = 30 * 1024;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** A refusal the calling agent can act on (bad name, stale base, too big), shown to it verbatim. */
@@ -180,7 +183,10 @@ export function lintDesign(text: string): { errors: string[]; warnings: string[]
   const say = (finding: (typeof findings)[number]) => `DESIGN.md${finding.path ? ` ${finding.path}` : ""}: ${finding.message}`;
   return {
     errors: findings.filter(finding => finding.severity === "error").map(say),
-    warnings: findings.filter(finding => finding.severity === "warning" && finding.rule !== "orphaned-tokens").map(say),
+    warnings: [
+      ...(Buffer.byteLength(text) > DESIGN_BYTES ? [`DESIGN.md is ${Buffer.byteLength(text)} bytes; keep it under ${DESIGN_BYTES} (tighten the prose, move one component's detail into components/<name>.md) so skill_get answers it whole.`] : []),
+      ...findings.filter(finding => finding.severity === "warning" && finding.rule !== "orphaned-tokens").map(say),
+    ],
   };
 }
 

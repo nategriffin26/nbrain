@@ -59,7 +59,7 @@ styles/<name>/
 3. **The owner's words, quoted.** What they praised and every correction, verbatim with dates, in the Overview.
 4. **Lint clean.** `npx @google/design.md lint DESIGN.md`: no errors. `skill_save` runs the same linter and refuses errors; read its warnings.
 5. **Proven by a blind rebuild.** An agent that sees only DESIGN.md (plus the screen's text content) rebuilds one real screen; compare its screenshot with the original side by side and as a pixel diff. Every difference is a gap in DESIGN.md: fix it there (and in any component or block doc that states the same value), never in the rebuild, and rebuild again until the two match. Keep both screenshots in `screens/`.
-6. **Compact.** DESIGN.md about 150-400 lines; SKILL.md under 80. Long tables and raw extraction go in `references/`.
+6. **Compact.** DESIGN.md under 30 KB (about 150-400 lines), because `skill_get` answers it whole and agent hosts cut longer answers in the middle; SKILL.md under 80 lines. One component's per-state detail goes in its `components/` doc; long tables and raw extraction go in `references/`.
 7. **`default` only on the owner's word**, with the kind of work named in the description.
 
 ## Steps

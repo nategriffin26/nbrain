@@ -119,3 +119,11 @@ it("refuses a stale base after a save that changed only a supporting file", asyn
   await expect(saveSkill({ ...ink, base: read, files: [{ path: "components/button.md", content: "# Button\n\nSecond writer, from the old read.\n" }] }, "omp", false)).rejects.toThrow(/changed since you read it/);
   expect(readFileSync(`${context}/styles/ink/components/button.md`, "utf8")).toContain("First writer's fix.");
 });
+
+it("warns when a DESIGN.md outgrows one skill_get answer, and not at the limit", async () => {
+  const sized = (bytes: number) => { const text = design(); return text + "x".repeat(bytes - Buffer.byteLength(text) - 1) + "\n"; };
+  const at = await saveSkill({ ...ink, name: "fits", files: [{ path: "DESIGN.md", content: sized(30 * 1024) }] }, "omp", false);
+  expect(at.warnings.filter(warning => warning.includes("keep it under"))).toEqual([]);
+  const over = await saveSkill({ ...ink, name: "spills", files: [{ path: "DESIGN.md", content: sized(30 * 1024 + 1) }] }, "omp", false);
+  expect(over.warnings.filter(warning => warning.includes("keep it under"))).toHaveLength(1);
+});
