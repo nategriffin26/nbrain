@@ -16,6 +16,13 @@ export interface SessionSearchInput extends SessionWindow {
   startedBefore?: string; exclude?: string;
 }
 
+export class SessionPageError extends Error {
+  constructor(readonly pages: number) {
+    super(`Session has ${pages} pages. Use page 0 through ${pages - 1}.`);
+    this.name = "SessionPageError";
+  }
+}
+
 const STOP = new Set(`a an and are as at be been but by can could did do does doing done for from had has have how i if in into is it its just let lets me my of on or our so that the their them then there these this those to up was we were what when where which who why will with would you your yeah ok okay also like really want need get go make sure think know see find look remember recall session sessions earlier last time while ago before again back please can't dont don't im i'm about any all some one thing things something way it's that's we've i've you've`.split(/\s+/));
 export function sessionTerms(query: string): string[] {
   return [...new Set((query.toLowerCase().match(/[a-z0-9][a-z0-9_]*/g) ?? []).filter(term => term.length >= 2 && !STOP.has(term)))];
@@ -156,7 +163,7 @@ export async function fetchSession(pool: Pool, pointer: string, page: number | u
   const redacted = await redactTexts(parts.map(part => part.text));
   const pages = sessionPages(parts.map((part, index) => ({ ...part, text: redacted[index]! })), entry);
   const at = page ?? (entry ? pages.findIndex(each => each.entries.includes(entry)) : 0);
-  if (!Number.isInteger(at) || at < 0 || at >= pages.length) throw new Error(`Session has ${pages.length} pages (0-based).`);
+  if (!Number.isInteger(at) || at < 0 || at >= pages.length) throw new SessionPageError(pages.length);
   return { id: `session:${id}`, title: session.title ?? session.project ?? session.harness, text: pages[at]!.text,
     page: at, pages: pages.length, entries: pages[at]!.entries.map(each => `session:${id}#${each}`),
     metadata: { harness: session.harness, project: session.project, started: session.started, ended: session.ended, parent: session.parent_id ? `session:${session.parent_id}` : null } };

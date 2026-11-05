@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import pg from "pg";
 import { freshDatabase } from "../testdb.js";
-import { fetchSession, listSessions, searchSessions, sessionPages } from "./search.js";
+import { fetchSession, listSessions, searchSessions, SessionPageError, sessionPages } from "./search.js";
 import { clipToolResult, ingestSessions, resolveSessionRoots, storeSession } from "./store.js";
 import type { SessionPart, SessionTranscript } from "./types.js";
 
@@ -88,6 +88,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("session projection and retrieva
     const pointer = found.entries[0]!;
     expect((await fetchSession(pool, pointer, undefined, work)).text).toContain("A complete archived answer.");
     await expect(fetchSession(pool, "session:root#absent", undefined, work)).rejects.toThrow("No entry");
+    for (const page of [-1, 0.5, 1]) await expect(fetchSession(pool, "session:root", page, work)).rejects.toBeInstanceOf(SessionPageError);
   });
   it("opens a tool-result receipt beyond its first line so the matching evidence can be cited", async () => {
     const text = "Command completed\nEvidence: turquoise-boundary";

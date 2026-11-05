@@ -71,7 +71,7 @@ The `sessions` connector retains raw JSONL bytes in `$BRAIN_HOME/sessions/<harne
 |---|---|
 | `sessions` | Every matching session, oldest first, without a cap. A time window selects owner prompts inside it, even if their session started earlier. `include_subagents` selects any visible part instead. |
 | `session_search` | BM25 over full transcripts, with a small prior for a project's own sessions when the query names it; `exact: true` matches the whole query literally. Each root session appears once, with the matching entry and any subagent identified. |
-| `fetch session:<id>#<entry>` | Opens the entry in 8 KB pages. Prompts and answers are complete; tool calls render on one line. Tool results show their first line, except the selected receipt expands to its indexed 2 KB so the match can be cited. |
+| `fetch session:<id>#<entry>` | Opens the entry in 8 KB pages. Prompts and answers are complete; tool calls render on one line. Tool results show their first line, except the selected receipt expands to its indexed 2 KB. An out-of-range page returns the valid range. |
 
 Coding sessions are work scope; Dross threads and life-tool results require life scope. Nested Executor calls and persistent evaluation cells retain life provenance. A session private mark hides it and its descendants from session listing, search, fetch and SQL, without a private-read override. The existing brief, profile and curator continue to use owner turns, not the full transcript index. Session hits carry no answer-strength verdict: fetch receipts before citing them.
 

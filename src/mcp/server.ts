@@ -48,7 +48,7 @@ import { query } from "../memory/records.js";
 import { read, resolvePerson, search, type SearchInput } from "../memory/search.js";
 import { sha256 } from "../memory/text.js";
 import { registerSkills, SKILL_TOOLS, skillsInstructions } from "../skills/mcp.js";
-import { fetchSession, listSessions, searchSessions, type SessionSearchInput, type SessionWindow } from "../sessions/search.js";
+import { fetchSession, listSessions, searchSessions, SessionPageError, type SessionSearchInput, type SessionWindow } from "../sessions/search.js";
 
 const HOME = process.env.MEMORY_MCP_HOME ?? `${BRAIN_HOME}/memory-mcp`;
 const PORT = Number(process.env.MEMORY_MCP_PORT ?? 8830);
@@ -216,7 +216,7 @@ app.all("/mcp", async c => {
         const refused = error instanceof ScopeError;
         log("memory-mcp.log", { ip, agent: agent.name, tool: name, args: shown, ms: Date.now() - started, status: refused ? "refused" : "error", error: clip(String(error)) });
         if (tool.write) log("memory-mcp-writes.log", { ip, agent: agent.name, tool: name, ...meta, kept: false, error: clip(String(error)) });
-        return { isError: true, content: [{ type: "text", text: refused ? error.message : "Memory call failed; see memory-mcp.log on the server." }] };
+        return { isError: true, content: [{ type: "text", text: refused || error instanceof SessionPageError ? error.message : "Memory call failed; see memory-mcp.log on the server." }] };
       }
     });
   }
