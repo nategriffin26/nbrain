@@ -50,11 +50,12 @@ async function get(call: Call, args: Record<string, unknown>) {
   if (typeof args.file === "string" && args.file) return fileOf(call, name, args.file, page);
   const { entry, body, files, design } = await getSkill(name);
   const part = pageOf(body, page);
-  const sheet = design ? pageOf(design.text) : undefined;
+  // a whole DESIGN.md in one answer: its rules come last, and a second page is easy to miss
+  const sheet = design ? pageOf(design.text, 0, 64 * 1024) : undefined;
   return {
     path: entry.path, uri: entry.uri, kind: entry.kind, frontmatter: entry.frontmatter, body: part.text, ...(part.pages > 1 ? { page: part.page, pages: part.pages } : {}),
-    ...(design && sheet ? { design: sheet.text, ...(sheet.pages > 1 ? { design_pages: sheet.pages } : {}), components: design.components, blocks: design.blocks } : {}),
-    files, ...(call.local ? { dir: entry.dir } : {}),
+    ...(design && sheet ? { design: sheet.text, ...(sheet.pages > 1 ? { design_continues: 'DESIGN.md is longer than this; open it as a file, page 2 onward (32 KB pages)' } : {}), components: design.components, blocks: design.blocks } : {}),
+    digest: files.find(file => file.path === "SKILL.md")!.digest, files: files.map(file => file.path), ...(call.local ? { dir: entry.dir } : {}),
     open: 'skill_get {"name":"' + entry.path + '","file":"<path>"} opens a file' + (design ? " (a component or block doc, a screenshot, or DESIGN.md with page)" : "") + "; references in the body are relative to the skill.",
   };
 }
