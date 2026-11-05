@@ -22,12 +22,6 @@ const INSTRUCTION_CHARS = 1500;
 const reads = (agent: Agent) => has(agent, "work") || has(agent, "life");
 const label = (entry: Entry) => `${entry.path} (${entry.kind}${entry.design ? ", design system" : ""}${entry.default ? `, the default when no ${entry.kind} is named` : ""})`;
 
-/** A refusal the agent can act on comes back as its message; anything else is the server's failure. */
-async function answer(work: () => Promise<unknown>): Promise<unknown> {
-  try { return await work(); }
-  catch (error) { if (error instanceof SkillError) return { isError: true, content: [{ type: "text", text: error.message }] }; throw error; }
-}
-
 async function fileOf(call: Call, name: string, file: string, page: number | undefined) {
   const found = await readSkillFile(name, file);
   const meta = { skill: found.path, path: found.entry.path, uri: found.entry.uri, size: found.entry.size, digest: found.entry.digest, mimeType: found.mimeType, ...(call.local ? { local: found.local } : {}) };
@@ -66,8 +60,8 @@ async function save(call: Call, args: Record<string, unknown>) {
 }
 
 export const SKILL_TOOLS: Record<string, Tool> = {
-  skill_get: { ...MCP_TOOLS.skill_get, scopes: ["work", "life"], run: (call, args) => answer(() => get(call, args)) },
-  skill_save: { ...MCP_TOOLS.skill_save, scopes: ["write"], write: true, run: (call, args) => answer(() => save(call, args)) },
+  skill_get: { ...MCP_TOOLS.skill_get, scopes: ["work", "life"], run: get },
+  skill_save: { ...MCP_TOOLS.skill_save, scopes: ["write"], write: true, run: save },
 };
 
 /** One skill file as resources/read contents: text, or base64 blob. */

@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import type { Pool } from "pg";
 import * as z from "zod";
 import { BRAIN_HOME, OWNER } from "../config.js";
+import { CallerError } from "../errors.js";
 import { MCP_TOOLS } from "../mcp/contract.js";
 import { type Call, ScopeError, type Tool } from "../mcp/types.js";
 import { researchId, savedId } from "./id.js";
@@ -24,12 +25,12 @@ const words = (text: string) => text.split(/\s+/).filter(Boolean).length;
 
 export async function save(who: Saver, input: SaveInput) {
   const given = [input.url, input.text, input.file].filter(each => each !== undefined && each !== "").length;
-  if (given !== 1) throw new Error("Give exactly one of url, text or file.");
+  if (given !== 1) throw new CallerError("Give exactly one of url, text or file.");
   if (input.file !== undefined && !who.local) throw new ScopeError("file reads a path on this machine; only a local caller may use it. Send the text instead.");
   const why = input.why?.replace(/\s+/g, " ").trim().slice(0, 500) ?? "";
   const project = input.project?.trim();
   const read: Captured = input.url ? await readUrl(input.url) : input.file ? await readFileAt(input.file, input.title) : readText(input.text!, input.title);
-  if (read.body.trim() === "") throw new Error("Nothing readable was found to keep.");
+  if (read.body.trim() === "") throw new CallerError("Nothing readable was found to keep.");
   const title = (input.url && input.title?.trim()) || read.title;
   const id = input.as === "research" ? researchId(read.external_id) : savedId(read.external_id);
   const now = new Date();

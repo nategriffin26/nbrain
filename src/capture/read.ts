@@ -9,6 +9,7 @@ import { parseHTML } from "linkedom";
 import { extractText, getDocumentProxy, getMeta } from "unpdf";
 import { hydrateBookmark } from "../connectors/xhydrate.js";
 import { realDeps } from "../connectors/xreaders.js";
+import { CallerError } from "../errors.js";
 import { contentId } from "./id.js";
 
 export type Form = "page" | "pdf" | "video" | "post" | "note" | "file";
@@ -40,8 +41,8 @@ const words = (text: string) => text.split(/\s+/).filter(Boolean).length;
 
 /** Lowercase scheme and host, no fragment, no tracking parameters; twitter.com is x.com. */
 export function canonicalUrl(input: string): string {
-  const url = new URL(input.trim());
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`Not a web address: ${input}`);
+  const url = URL.parse(input.trim());
+  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:")) throw new CallerError(`Not a web address: ${input}`);
   url.hash = "";
   if (/^(?:www\.|mobile\.)?twitter\.com$/.test(url.hostname)) url.hostname = "x.com";
   for (const key of [...url.searchParams.keys()]) if (TRACKING.test(key)) url.searchParams.delete(key);
@@ -107,10 +108,10 @@ export async function readUrl(input: string): Promise<Captured> {
   const common = { external_id: final, url: final, ...(final === original ? {} : { original_url: original }) };
   if (isPdf(bytes)) {
     const pdf = await readPdf(bytes, decodeURIComponent(basename(new URL(final).pathname)).replace(/\.pdf$/i, "") || final);
-    if (pdf.text === "") throw new Error("The PDF has no text layer (a scan); nothing to keep.");
+    if (pdf.text === "") throw new CallerError("The PDF has no text layer (a scan); nothing to keep.");
     return { ...common, title: pdf.title, body: pdf.text, form: "pdf", reader: "unpdf", ...(pdf.author ? { author: pdf.author } : {}), snapshot: { bytes, ext: "pdf" } };
   }
-  if (!/html|xml|^text\//.test(fetched.type) && fetched.type !== "") throw new Error(`Not a page or a PDF (${fetched.type}).`);
+  if (!/html|xml|^text\//.test(fetched.type) && fetched.type !== "") throw new CallerError(`Not a page or a PDF (${fetched.type}).`);
   const html = decode(bytes, fetched.charset);
   let page = await readHtml(html, final);
   let reader = "defuddle";
@@ -118,34 +119,36 @@ export async function readUrl(input: string): Promise<Captured> {
     const rendered = await readRendered(final);
     if (rendered !== undefined && words(rendered.text) > words(page.body)) { page = { ...page, title: rendered.title || page.title, body: rendered.text.trim() }; reader = "tf"; }
   }
-  if (page.body === "") throw new Error("The page has no readable text.");
+  if (page.body === "") throw new CallerError("The page has no readable text.");
   return { ...common, title: page.title || final, body: page.body, form: "page", reader, ...(page.site ? { site: page.site } : {}), ...(page.author ? { author: page.author } : {}), ...(page.published ? { published: page.published } : {}), snapshot: { bytes: gzipSync(Buffer.from(html)), ext: "html.gz" } };
 }
 
 /** A pasted note, verbatim; its title is `title` or its first line. */
 export function readText(text: string, title?: string): Captured {
   const body = text.replace(/\0/g, "").trim();
-  if (body === "") throw new Error("The text is empty.");
+  if (body === "") throw new CallerError("The text is empty.");
   return { external_id: contentId("text", body), url: null, title: title?.trim() || body.split("\n", 1)[0]!.replace(/^#+\s*/, "").slice(0, 100), body, form: "note", reader: "text" };
 }
 
 /** A file on this machine: a PDF, an HTML page, or text. */
 export async function readFileAt(path: string, title?: string): Promise<Captured> {
-  const bytes = await readFile(path);
+  const bytes = await readFile(path).catch((error: NodeJS.ErrnoException) => {
+    throw error.code === "ENOENT" || error.code === "EISDIR" ? new CallerError(`No readable file at ${path}.`) : error;
+  });
   const name = basename(path);
   const common = { external_id: contentId("file", bytes), url: null, form: "file" as const };
   if (isPdf(bytes)) {
     const pdf = await readPdf(bytes, name.replace(/\.pdf$/i, ""));
-    if (pdf.text === "") throw new Error("The PDF has no text layer (a scan); nothing to keep.");
+    if (pdf.text === "") throw new CallerError("The PDF has no text layer (a scan); nothing to keep.");
     return { ...common, title: title?.trim() || pdf.title, body: pdf.text, reader: "unpdf", ...(pdf.author ? { author: pdf.author } : {}), snapshot: { bytes, ext: "pdf" } };
   }
-  if (bytes.subarray(0, 8192).includes(0)) throw new Error(`${name} is not a PDF or a text file.`);
+  if (bytes.subarray(0, 8192).includes(0)) throw new CallerError(`${name} is not a PDF or a text file.`);
   const raw = bytes.toString("utf8");
   if (/^\.html?$/i.test(extname(name))) {
     const page = await readHtml(raw, `file:///${name}`);
     return { ...common, title: title?.trim() || page.title || name, body: page.body, reader: "defuddle", ...(page.author ? { author: page.author } : {}), ...(page.published ? { published: page.published } : {}), snapshot: { bytes: gzipSync(bytes), ext: "html.gz" } };
   }
   const body = raw.replace(/\0/g, "").trim();
-  if (body === "") throw new Error(`${name} is empty.`);
+  if (body === "") throw new CallerError(`${name} is empty.`);
   return { ...common, title: title?.trim() || name, body, reader: "text" };
 }

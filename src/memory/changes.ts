@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { OWNER } from "../config.js";
+import { CallerError } from "../errors.js";
 import { cleanText, quoteOf } from "./text.js";
 import { currentSql, personSql, resolvePerson, visibleSql } from "./search.js";
 
@@ -18,7 +19,7 @@ export function parseSince(value: string, now = new Date()): Date {
       if (Number.isFinite(date.getTime())) return date;
     }
   }
-  throw new Error(`Not a since date: ${value}. Use ISO, YYYY-MM-DD, a weekday, yesterday, this morning, or N days ago.`);
+  throw new CallerError(`Not a since date: ${value}. Use ISO, YYYY-MM-DD, a weekday, yesterday, this morning, or N days ago.`);
 }
 
 export async function changes(pool: Pool, input: { since: string; source?: string[]; person?: string; limit?: number; private?: boolean }, now = new Date()): Promise<{ since: string; counts: Record<string, number>; threads: { source: string; thread?: string; title: string; who: string; first: string; last: string; count: number; latest: { id: string; quote: string } }[] }> {

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { lint } from "@google/design.md/linter";
 import YAML from "yaml";
 import { CONTEXT, ZONE } from "../config.js";
+import { CallerError } from "../errors.js";
 import { commit } from "../context/git.js";
 import { ScopeError } from "../mcp/types.js";
 
@@ -36,7 +37,7 @@ export const DESIGN_BYTES = 30 * 1024;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** A refusal the calling agent can act on (bad name, stale base, too big), shown to it verbatim. */
-export class SkillError extends Error {}
+export class SkillError extends CallerError {}
 
 export interface Frontmatter { name: string; description: string; metadata?: Record<string, string>; [key: string]: unknown }
 export interface FileEntry { path: string; uri: string; size: number; digest: string }

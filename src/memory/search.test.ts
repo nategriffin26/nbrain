@@ -77,6 +77,7 @@ async function accessFixture() {
     CREATE TABLE memory.item_people (item_id text, person_id text, role text);
     CREATE TABLE memory.records (id text PRIMARY KEY, superseded_by text);
     INSERT INTO memory.items (id) VALUES ('hidden');
+    INSERT INTO memory.chunks VALUES ('hidden',0,0,'');
     INSERT INTO memory.items (id,source,thread) VALUES ('thread-item','gmail','secret');
     INSERT INTO memory.private VALUES ('hidden'),('thread:gmail:secret');
     INSERT INTO memory.items (id,source) VALUES ('old','record'),('latest','record'),('retracted','record');

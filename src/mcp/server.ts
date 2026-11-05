@@ -33,6 +33,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import pg from "pg";
 import * as z from "zod";
 import { BRAIN_HOME, BRAND, CONTEXT, LOGS, MEMORY_POOL, OWNER } from "../config.js";
+import { CallerError } from "../errors.js";
 import { brief, type BriefInput } from "../brief.js";
 import { captureTools } from "../capture/save.js";
 import { NOW_FILE, profileFiles, readNow } from "../context/profile.js";
@@ -48,7 +49,7 @@ import { query } from "../memory/records.js";
 import { read, resolvePerson, search, type SearchInput } from "../memory/search.js";
 import { sha256 } from "../memory/text.js";
 import { registerSkills, SKILL_TOOLS, skillsInstructions } from "../skills/mcp.js";
-import { fetchSession, listSessions, searchSessions, SessionPageError, type SessionSearchInput, type SessionWindow } from "../sessions/search.js";
+import { fetchSession, listSessions, searchSessions, type SessionSearchInput, type SessionWindow } from "../sessions/search.js";
 
 const HOME = process.env.MEMORY_MCP_HOME ?? `${BRAIN_HOME}/memory-mcp`;
 const PORT = Number(process.env.MEMORY_MCP_PORT ?? 8830);
@@ -102,6 +103,9 @@ async function fetchScoped(agent: Agent, id: string, page?: number, privateItems
   if (privateItems && !has(agent, "life")) throw new ScopeError(`Not in ${agent.name}'s scope: private items need life scope.`);
   const want = id.trim();
   if (want.startsWith("session:")) return fetchSession(reader, want, page, { life: has(agent, "life") || has(agent, "archive") });
+  if (["profile", "now"].includes(want) || want.startsWith("card:")) {
+    if (page !== undefined && page !== 0) throw new CallerError(`${want} has 1 page (0-based).`);
+  }
   if (want === "profile") {
     const files = profileFiles(agent.scopes);
     return { id: "profile", title: `${owner}'s profile`, text: files.map(each => each.text.trim()).join("\n\n"), updated: await updated(files.map(each => each.file)), metadata: { files: files.map(each => each.file) } };
@@ -114,7 +118,7 @@ async function fetchScoped(agent: Agent, id: string, page?: number, privateItems
   const allowed = sourcesFor(agent);
   if (want.startsWith("card:")) {
     const card = await readCard(reader, want);
-    if (!card || (allowed && !allowed.includes(card.source))) throw new ScopeError(`No card ${agent.name} may open has id ${want}.`);
+    if (!card || (allowed && !allowed.includes(card.source))) throw new CallerError(`No card ${agent.name} may open has id ${want}.`);
     const text = [card.what, `Why: ${card.why}`, card.craft ? `Craft: ${card.craft}` : "", card.projects.length ? `Projects: ${card.projects.join(", ")}` : "", `Status: ${card.status}${card.status_note ? ` (${card.status_note})` : ""}`].filter(Boolean).join("\n");
     return { ...card, text, metadata: { kind: card.kind, status: card.status, source: card.source, item: card.item_id } };
   }
@@ -215,9 +219,9 @@ app.all("/mcp", async c => {
         return content;
       } catch (error) {
         const refused = error instanceof ScopeError;
-        log("memory-mcp.log", { ip, agent: agent.name, tool: name, args: shown, ms: Date.now() - started, status: refused ? "refused" : "error", error: clip(String(error)) });
+        log("memory-mcp.log", { ip, agent: agent.name, tool: name, args: shown, ms: Date.now() - started, status: refused ? "refused" : error instanceof CallerError ? 400 : "error", error: clip(String(error)) });
         if (tool.write) log("memory-mcp-writes.log", { ip, agent: agent.name, tool: name, ...meta, kept: false, error: clip(String(error)) });
-        return { isError: true, content: [{ type: "text", text: refused || error instanceof SessionPageError ? error.message : "Memory call failed; see memory-mcp.log on the server." }] };
+        return { isError: true, content: [{ type: "text", text: refused || error instanceof CallerError ? error.message : "Memory call failed; see memory-mcp.log on the server." }] };
       }
     });
   }

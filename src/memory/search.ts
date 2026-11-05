@@ -15,6 +15,7 @@
 import type { Pool, PoolClient } from "pg";
 import * as z from "zod";
 import { ASSISTANT, OWNER, ZONE } from "../config.js";
+import { CallerError } from "../errors.js";
 import { runModel, workersAiSet } from "../workers-ai.js";
 import { embed } from "./store.js";
 import { cleanText, type DateMention, dateMention, fold, foldHandle, quoteOf, queryWords } from "./text.js";
@@ -125,7 +126,7 @@ function withoutCodes(alias: string): string {
 /** Day bound of a from/to filter: a bare date is a whole local day (`to` inclusive). */
 function bound(value: string, end: boolean): Date {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? new Date(`${value.trim()}T00:00:00`) : new Date(value);
-  if (Number.isNaN(date.getTime())) throw new Error(`Not a date: ${value}`);
+  if (Number.isNaN(date.getTime())) throw new CallerError(`Not a date: ${value}`);
   return end && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1) : date;
 }
 
@@ -568,7 +569,7 @@ export async function read(pool: Pool, id: string, page?: number, access: { priv
   const itemId = match ? match[1]! : id.trim();
   const privateItems = access.private === true && access.life === true;
   const { rows: [item] } = await pool.query(`SELECT * FROM memory.items i WHERE i.id = $1 ${privateItems ? "" : `AND ${visibleSql("i")}`}`, [itemId]);
-  if (!item) throw new Error(`Nothing in memory has id ${itemId}.`);
+  if (!item) throw new CallerError(`Nothing in memory has id ${itemId}.`);
   const pages: { start: number; text: string }[] = [];
   for (let start = 0; ; ) {
     if (item.body.length - start <= PAGE_CHARS) { pages.push({ start, text: item.body.slice(start) }); break; }
@@ -578,8 +579,9 @@ export async function read(pool: Pool, id: string, page?: number, access: { priv
     start = end;
   }
   const { rows: chunks } = await pool.query<{ part: number; start_at: number; heading: string }>("SELECT part, start_at, heading FROM memory.chunks WHERE item_id = $1 ORDER BY part", [itemId]);
+  if (match && !chunks.some(chunk => chunk.part === Number(match[2]))) throw new CallerError(`No chunk ${id.trim()} is available.`);
   const at = page ?? (match ? Math.max(0, pages.findLastIndex(each => each.start <= (chunks.find(chunk => chunk.part === Number(match[2]))?.start_at ?? 0))) : 0);
-  if (!Number.isInteger(at) || at < 0 || at >= pages.length) throw new Error(`${itemId} has ${pages.length} page${pages.length === 1 ? "" : "s"} (0-based).`);
+  if (!Number.isInteger(at) || at < 0 || at >= pages.length) throw new CallerError(`${itemId} has ${pages.length} page${pages.length === 1 ? "" : "s"} (0-based).`);
   const { rows: people } = await pool.query<{ role: string; name: string }>("SELECT r.role, p.name FROM memory.item_people r JOIN memory.people p ON p.id = r.person_id JOIN memory.items i ON i.id = r.item_id WHERE r.item_id = $1 AND NOT (r.role = 'sender' AND p.kind = 'person' AND i.source = 'imessage' AND i.sender ~ '^[0-9]{1,6}$') ORDER BY r.role, p.name", [itemId]);
   const result: Record<string, unknown> = {
     id: item.id, title: item.title || item.thread_title || item.source, source: item.source, kind: item.kind, date: item.at, url: item.url ?? undefined,

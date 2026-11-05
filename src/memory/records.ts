@@ -4,6 +4,7 @@
 // order or appointment (a "statement ready" alert, a sale notice, an invitation) is no record.
 import type { Pool, QueryArrayResult } from "pg";
 import { OWNER, ZONE } from "../config.js";
+import { CallerError } from "../errors.js";
 import { complete, roleChoice } from "../models.js";
 
 const { name: owner } = OWNER;
@@ -199,6 +200,7 @@ const CELL_CHARS = 300;
 
 /** Read-only SQL over the memory schema, for the questions that count, sum, list or pick the latest. */
 export async function query(pool: Pool, sql: string): Promise<{ columns: string[]; rows: unknown[][]; rowCount: number; truncated?: true }> {
+  if (!sql.trim()) throw new CallerError("Give a read-only SQL query.");
   const client = await pool.connect();
   try {
     await client.query("BEGIN READ ONLY");
@@ -207,7 +209,14 @@ export async function query(pool: Pool, sql: string): Promise<{ columns: string[
     await client.query(`SET LOCAL timezone = '${ZONE}'`);
     await client.query("SET LOCAL search_path = memory, public");
     // several statements come back as an array of results; the last one answers
-    const result = await client.query({ text: sql, rowMode: "array" }) as QueryArrayResult | QueryArrayResult[];
+    const result = await client.query({ text: sql, rowMode: "array" }).catch((error: unknown) => {
+      // Only the caller's SQL is classified here; connection and role setup failures stay internal.
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (error instanceof Error && /^(?:21|22|42)\w{3}$|^25006$/.test(String(code))) {
+        throw new CallerError(error.message);
+      }
+      throw error;
+    }) as QueryArrayResult | QueryArrayResult[];
     const done = Array.isArray(result) ? result[result.length - 1]! : result;
     const rows = (done.rows as unknown[][]).slice(0, MAX_ROWS).map(row => row.map(cell => (typeof cell === "string" && cell.length > CELL_CHARS ? `${cell.slice(0, CELL_CHARS)}…` : cell instanceof Date ? cell.toISOString() : cell)));
     return { columns: done.fields.map(field => field.name), rows, rowCount: done.rowCount ?? rows.length, ...(done.rows.length > MAX_ROWS ? { truncated: true as const } : {}) };

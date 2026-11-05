@@ -192,7 +192,7 @@ Privacy and safety:
   Session private marks also hide the corresponding owner turns from ordinary reads. Session catalog and part tables enforce private marks for SQL readers; unlike other items, private sessions have no read override.
 - **Least privilege.** The server never gets the Postgres superuser. It reads as `memory_ro`, which can only `SELECT` schema `memory`, and writes as `memory_writer`, which can only insert notes, saves and corrections, mark and unmark private, and set a card's status.
 - **Hashed tokens.** `$BRAIN_HOME/memory-mcp/tokens.json` stores only the SHA-256 of each token.
-- **Logs and a kill switch.** Each call is logged with its arguments clipped and never its result; writes log metadata only. `touch $BRAIN_HOME/memory-mcp/DISABLED` makes `/mcp` answer 503.
+- **Logs and a kill switch.** Each call is logged with its arguments clipped and never its result; writes log metadata only. Caller-fixable input errors log numeric `400` and return their corrective message; scope refusals log `"refused"`. Internal failures log `"error"` and return a generic message. Health readers must exclude caller errors and refusals. `touch $BRAIN_HOME/memory-mcp/DISABLED` makes `/mcp` answer 503.
 
 ## Skills and styles
 

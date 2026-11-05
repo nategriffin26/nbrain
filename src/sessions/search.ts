@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { CallerError } from "../errors.js";
 import { quoteOf } from "../memory/text.js";
 import { containsTerm } from "../memory/search.js";
 import { readArchivedSession } from "./archive.js";
@@ -16,7 +17,7 @@ export interface SessionSearchInput extends SessionWindow {
   startedBefore?: string; exclude?: string;
 }
 
-export class SessionPageError extends Error {
+export class SessionPageError extends CallerError {
   constructor(readonly pages: number) {
     super(`Session has ${pages} pages. Use page 0 through ${pages - 1}.`);
     this.name = "SessionPageError";
@@ -35,7 +36,7 @@ class Parameters {
 function dateBound(value: string, end: boolean): Date {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(value);
   const date = new Date(day ? `${value}T00:00:00` : value);
-  if (!Number.isFinite(date.getTime())) throw new Error("Session window requires a valid date or ISO timestamp.");
+  if (!Number.isFinite(date.getTime())) throw new CallerError("Session window requires a valid date or ISO timestamp.");
   if (day && end) date.setDate(date.getDate() + 1);
   return date;
 }
@@ -152,13 +153,13 @@ export function sessionPages(parts: readonly SessionPart[], expandedEntry?: stri
 
 export async function fetchSession(pool: Pool, pointer: string, page: number | undefined, access: SessionAccess) {
   const match = /^session:([^#]+)(?:#(.+))?$/.exec(pointer);
-  if (!match) throw new Error("Expected session:<id>#<entry>.");
+  if (!match) throw new CallerError("Expected session:<id>#<entry>.");
   const id = match[1]!, entry = match[2];
   const { rows: [session] } = await pool.query(`SELECT s.* FROM memory.sessions s WHERE s.id=$1 AND ${sessionVisible("s")} ${access.life ? "" : "AND s.scope='work'"}`, [id]);
-  if (!session) throw new Error("No session is available at that pointer.");
+  if (!session) throw new CallerError("No session is available at that pointer.");
   const transcript = await readArchivedSession(session.archive_path, session.harness, session.original_path);
   const parts = transcript.parts.filter(part => access.life || part.scope === "work");
-  if (entry && !parts.some(part => part.entry === entry)) throw new Error("No entry is available at that pointer.");
+  if (entry && !parts.some(part => part.entry === entry)) throw new CallerError("No entry is available at that pointer.");
   // Redact before pagination: a secret split at a page boundary must not escape detection.
   const redacted = await redactTexts(parts.map(part => part.text));
   const pages = sessionPages(parts.map((part, index) => ({ ...part, text: redacted[index]! })), entry);
