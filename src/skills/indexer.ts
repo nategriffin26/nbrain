@@ -5,19 +5,19 @@
 import type { Pool } from "pg";
 import { stat } from "node:fs/promises";
 import { type ItemInput, writeItems } from "../memory/store.js";
-import { catalog, firstSentence, getSkill } from "./library.js";
+import { catalog, firstSentence, readSkill } from "./library.js";
 
 /** Index every skill on disk and drop the items of skills that are gone; answers how many items were written. */
 export async function indexSkills(pool: Pool): Promise<number> {
   const { skills } = await catalog();
   const items = await Promise.all(skills.map(async ({ path }): Promise<ItemInput> => {
-    const { entry, body, files, design } = await getSkill(path);
+    const { entry, body, digest, design } = await readSkill(path);
     const updated = entry.updated ? new Date(entry.updated) : undefined;
     const at = updated && !Number.isNaN(updated.getTime()) ? updated : (await stat(`${entry.dir}/SKILL.md`)).mtime;
     return {
       id: `skill:${path}`, source: "skill", kind: entry.kind, ext_id: path, title: `${entry.name}: ${firstSentence(entry.description)}`, at,
       sender: entry.author ?? null, url: entry.uri, body: `${entry.description}\n\n${body.trim()}${design ? `\n\n${design.text.trim()}` : ""}`, origin: "skill",
-      meta: { kind: entry.kind, default: entry.default, design: entry.design, uri: entry.uri, digest: files.find(file => file.path === "SKILL.md")!.digest, files: files.length },
+      meta: { kind: entry.kind, default: entry.default, design: entry.design, uri: entry.uri, digest, files: entry.files },
     };
   }));
   const written = await writeItems(pool, items);

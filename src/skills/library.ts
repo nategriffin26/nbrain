@@ -104,19 +104,28 @@ export function safeRelative(path: string): string {
   return path;
 }
 
-/** Every file of the skill at `dir` (hidden files and anything not a regular file left out), by path, with digests. */
-export async function manifest(path: string, dir: string): Promise<FileEntry[]> {
-  const out: FileEntry[] = [];
+/** The paths of every file of the skill at `dir` (hidden files and anything not a regular file left out), sorted;
+ *  no file is read, so listing a style with hundreds of screenshots stays cheap. */
+async function pathsOf(dir: string): Promise<string[]> {
+  const out: string[] = [];
   const walk = async (rel: string) => {
     for (const entry of await readdir(join(dir, rel), { withFileTypes: true })) {
       if (entry.name.startsWith(".")) continue;
       const file = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) await walk(file);
-      else if (entry.isFile()) { const bytes = await readFile(join(dir, file)); out.push({ path: file, uri: uriOf(path, file), size: bytes.length, digest: digestOf(bytes) }); }
+      else if (entry.isFile()) out.push(file);
     }
   };
   await walk("");
-  return out.sort((a, b) => (a.path < b.path ? -1 : 1));
+  return out.sort();
+}
+
+/** Every file of the skill at `dir`, by path, with digests. */
+export async function manifest(path: string, dir: string): Promise<FileEntry[]> {
+  return Promise.all((await pathsOf(dir)).map(async file => {
+    const bytes = await readFile(join(dir, file));
+    return { path: file, uri: uriOf(path, file), size: bytes.length, digest: digestOf(bytes) };
+  }));
 }
 
 /** `explainer`, `styles/dashboard`, `skill://styles/dashboard/SKILL.md` or `skill://styles/dashboard` → the skill's path and directory.
@@ -141,24 +150,24 @@ export function splitUri(uri: string): { path: string; file: string } | undefine
   return { path: `${match[1]}/${match[2]}`, file: decodeURIComponent(match[3]!) };
 }
 
-function entryOf(path: string, dir: string, frontmatter: Frontmatter, files: FileEntry[]): Entry {
+function entryOf(path: string, dir: string, frontmatter: Frontmatter, files: string[]): Entry {
   const metadata = frontmatter.metadata ?? {};
   return {
     path, uri: uriOf(path), dir, kind: metadata.kind === "style" || path.startsWith("styles/") ? "style" : "skill", name: frontmatter.name, description: frontmatter.description,
     default: metadata.default === "true", ...(metadata.updated ? { updated: metadata.updated } : {}), ...(metadata.author ? { author: metadata.author } : {}),
-    files: files.length, design: files.some(file => file.path === DESIGN), frontmatter,
+    files: files.length, design: files.includes(DESIGN), frontmatter,
   };
 }
 
 /** `components/` or `blocks/` of a design system: each `<folder>/<name>.md`, with the images in `<folder>/<name>/` or
  *  named `<folder>/<name>.<ext>`. */
-async function partsOf(dir: string, files: FileEntry[], folder: "components" | "blocks"): Promise<Part[]> {
-  const docs = files.filter(file => file.path.startsWith(`${folder}/`) && file.path.endsWith(".md") && file.path.split("/").length === 2);
+async function partsOf(dir: string, files: string[], folder: "components" | "blocks"): Promise<Part[]> {
+  const docs = files.filter(file => file.startsWith(`${folder}/`) && file.endsWith(".md") && file.split("/").length === 2);
   const parts = await Promise.all(docs.map(async doc => {
-    const name = doc.path.slice(folder.length + 1, -".md".length);
-    const images = files.filter(file => IMAGE.test(file.path) && (file.path.startsWith(`${folder}/${name}/`) || file.path.startsWith(`${folder}/${name}.`))).map(file => file.path);
-    const lead = (await readFile(`${dir}/${doc.path}`, "utf8")).split(/\n\s*\n/).map(part => part.trim()).find(part => part && !part.startsWith("#")) ?? "";
-    return { name, doc: doc.path, summary: firstSentence(lead), images };
+    const name = doc.slice(folder.length + 1, -".md".length);
+    const images = files.filter(file => IMAGE.test(file) && (file.startsWith(`${folder}/${name}/`) || file.startsWith(`${folder}/${name}.`)));
+    const lead = (await readFile(`${dir}/${doc}`, "utf8")).split(/\n\s*\n/).map(part => part.trim()).find(part => part && !part.startsWith("#")) ?? "";
+    return { name, doc, summary: firstSentence(lead), images };
   }));
   return parts.sort((a, b) => (a.name < b.name ? -1 : 1));
 }
@@ -189,7 +198,7 @@ export async function catalog(): Promise<{ skills: Entry[]; problems: { path: st
         const { frontmatter } = parseSkill(await readFile(`${dir}/SKILL.md`, "utf8"));
         const wrong = problems(frontmatter, name);
         if (wrong.length) { bad.push({ path, problem: wrong.join("; ") }); continue; }
-        skills.push(entryOf(path, dir, frontmatter, await manifest(path, dir)));
+        skills.push(entryOf(path, dir, frontmatter, await pathsOf(dir)));
       } catch (error) {
         bad.push({ path, problem: error instanceof SkillError ? error.message : (error as NodeJS.ErrnoException).code === "ENOENT" ? "no SKILL.md" : String(error) });
       }
@@ -198,18 +207,26 @@ export async function catalog(): Promise<{ skills: Entry[]; problems: { path: st
   return { skills, problems: bad };
 }
 
-/** One skill: its entry, body and every file with its digest; a visual style also its DESIGN.md, components and blocks. */
-export async function getSkill(name: string): Promise<{ entry: Entry; body: string; files: FileEntry[]; design?: Design }> {
+/** One skill without its manifest: entry, body, SKILL.md's digest, and a visual style's DESIGN.md, components and
+ *  blocks. Reads only the markdown, never the screenshots. */
+export async function readSkill(name: string): Promise<{ entry: Entry; body: string; digest: string; design?: Design }> {
   const found = await locate(name);
   if (!found) throw new SkillError(`No skill or style "${name}". Call skill_get with no name for the catalog.`);
-  const { frontmatter, body } = parseSkill(await readFile(`${found.dir}/SKILL.md`, "utf8"));
+  const skillMd = await readFile(`${found.dir}/SKILL.md`);
+  const { frontmatter, body } = parseSkill(skillMd.toString("utf8"));
   const wrong = problems(frontmatter, basename(found.dir));
   if (wrong.length) throw new SkillError(`${found.path}/SKILL.md is invalid: ${wrong.join("; ")}`);
-  const files = await manifest(found.path, found.dir);
-  const entry = entryOf(found.path, found.dir, frontmatter, files);
-  if (!entry.design) return { entry, body, files };
-  const [text, components, blocks] = await Promise.all([readFile(`${found.dir}/${DESIGN}`, "utf8"), partsOf(found.dir, files, "components"), partsOf(found.dir, files, "blocks")]);
-  return { entry, body, files, design: { text, components, blocks } };
+  const paths = await pathsOf(found.dir);
+  const entry = entryOf(found.path, found.dir, frontmatter, paths);
+  if (!entry.design) return { entry, body, digest: digestOf(skillMd) };
+  const [text, components, blocks] = await Promise.all([readFile(`${found.dir}/${DESIGN}`, "utf8"), partsOf(found.dir, paths, "components"), partsOf(found.dir, paths, "blocks")]);
+  return { entry, body, digest: digestOf(skillMd), design: { text, components, blocks } };
+}
+
+/** One skill as readSkill gives it, plus every file with its digest. */
+export async function getSkill(name: string): Promise<{ entry: Entry; body: string; files: FileEntry[]; design?: Design }> {
+  const { digest: _digest, ...skill } = await readSkill(name);
+  return { ...skill, files: await manifest(skill.entry.path, skill.entry.dir) };
 }
 
 const TYPES: Record<string, string> = {
@@ -266,7 +283,8 @@ async function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
  * Create or update one of the owner's skills or styles and commit it as `signer`. An update must name the digest of the
  * SKILL.md it read (`base`): a save never overwrites what its writer has not seen, and writers merge into the current
  * body instead of rewriting from memory (ACE measured one whole rewrite collapsing 18,282 tokens of context to 122).
- * `from` copies a file from this machine and is for `local` callers only.
+ * Every save raises `metadata.revision`, so SKILL.md's digest moves even when only a supporting file (DESIGN.md, a
+ * component) changed, and `base` guards the whole skill. `from` copies a file from this machine and is for `local` callers only.
  */
 export async function saveSkill(input: SaveInput, signer: string, local: boolean): Promise<Saved> {
   if (!NAME.test(input.name) || input.name.length > 64) throw new SkillError(`name must be 1-64 lowercase letters, digits and single hyphens; got ${JSON.stringify(input.name)}.`);
@@ -281,7 +299,7 @@ export async function saveSkill(input: SaveInput, signer: string, local: boolean
 
     const old = current ? parseSkill(current.toString("utf8")).frontmatter : undefined;
     const { name: _name, description: _description, metadata: oldMetadata, ...rest } = old ?? ({} as Partial<Frontmatter>);
-    const metadata: Record<string, string> = { ...oldMetadata, kind: input.kind, author: signer, updated: today() };
+    const metadata: Record<string, string> = { ...oldMetadata, kind: input.kind, author: signer, updated: today(), revision: String((Number(oldMetadata?.revision) || 0) + 1) };
     if (input.source !== undefined) metadata.source = input.source;
     if (input.default === true) metadata.default = "true";
     else if (input.default === false) delete metadata.default;

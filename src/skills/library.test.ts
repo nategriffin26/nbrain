@@ -112,3 +112,10 @@ it("returns the linter's warnings, but not for tokens no component references", 
   expect(saved.warnings.some(warning => warning.includes("No 'primary' color"))).toBe(true);
   expect(saved.warnings.filter(warning => warning.includes("never referenced"))).toEqual([]);
 });
+
+it("refuses a stale base after a save that changed only a supporting file", async () => {
+  const read = (await getSkill("styles/ink")).files.find(file => file.path === "SKILL.md")!.digest;
+  await saveSkill({ ...ink, base: read, files: [{ path: "components/button.md", content: "# Button\n\nFirst writer's fix.\n" }] }, "omp", false);
+  await expect(saveSkill({ ...ink, base: read, files: [{ path: "components/button.md", content: "# Button\n\nSecond writer, from the old read.\n" }] }, "omp", false)).rejects.toThrow(/changed since you read it/);
+  expect(readFileSync(`${context}/styles/ink/components/button.md`, "utf8")).toContain("First writer's fix.");
+});

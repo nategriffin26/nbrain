@@ -178,8 +178,9 @@ function registerBriefPrompt(server: McpServer, agent: Agent) {
 const app = new Hono();
 app.route("/", auth.routes);
 app.get("/healthz", c => c.text("ok"));
-// skill_save carries a skill's files (up to the Skills extension's 16 MiB per skill)
-app.use("/mcp", bodyLimit({ maxSize: 16 * 1024 * 1024, onError: c => c.json({ error: "too large" }, 413) }));
+// skill_save carries a skill's files (up to the Skills extension's 16 MiB per skill, checked decoded in saveSkill);
+// base64 in JSON adds a third, so the request may be 24 MiB
+app.use("/mcp", bodyLimit({ maxSize: 24 * 1024 * 1024, onError: c => c.json({ error: "too large" }, 413) }));
 app.all("/mcp", async c => {
   const caller = requestCaller(c, auth.publicUrl), ip = caller.label;
   if (existsSync(`${HOME}/DISABLED`)) { log("memory-mcp.log", { ip, status: 503, why: "kill switch" }); return c.json({ error: "disabled" }, 503); }

@@ -50,7 +50,7 @@ styles/<name>/
 
 **Components** document only what exists in the real product. A variant described but never built gets used anyway. Each states file is a screenshot of that state from the real product; where a state cannot be captured there, say so and show the rebuild's state, labelled.
 
-**Blocks** come from real screens: the sections the product keeps rebuilding (a message group, a composer, a book header). Each one names the components it uses, its layout values, its states, and carries its markup. A screen is a stack of blocks; a screen that needs a block the style lacks is a sign to ask before inventing one.
+**Blocks** come from real screens: the sections the product keeps rebuilding (a message group, a composer, a book header). Each one names the components it uses, its layout values, its states, and carries its markup. A screen is a stack of blocks; a screen that needs a block the style lacks gets one built from the tokens and components in the style's spirit, added to `blocks/` once the owner accepts it.
 
 ## The bar
 
@@ -58,7 +58,7 @@ styles/<name>/
 2. **A reason for every choice.** Study the real product (its writing about itself, its designers' talks, how it behaves) and write why. Where the reason is your reading rather than the source's words, say so.
 3. **The owner's words, quoted.** What they praised and every correction, verbatim with dates, in the Overview.
 4. **Lint clean.** `npx @google/design.md lint DESIGN.md`: no errors. `skill_save` runs the same linter and refuses errors; read its warnings.
-5. **Proven by a blind rebuild.** An agent that sees only DESIGN.md (plus the screen's text content) rebuilds one real screen; compare its screenshot with the original side by side and as a pixel diff. Every difference is a gap in the style: fix DESIGN.md, components or blocks, never the rebuild, and rebuild again until the two match. Keep both screenshots in `screens/`.
+5. **Proven by a blind rebuild.** An agent that sees only DESIGN.md (plus the screen's text content) rebuilds one real screen; compare its screenshot with the original side by side and as a pixel diff. Every difference is a gap in DESIGN.md: fix it there (and in any component or block doc that states the same value), never in the rebuild, and rebuild again until the two match. Keep both screenshots in `screens/`.
 6. **Compact.** DESIGN.md about 150-400 lines; SKILL.md under 80. Long tables and raw extraction go in `references/`.
 7. **`default` only on the owner's word**, with the kind of work named in the description.
 
