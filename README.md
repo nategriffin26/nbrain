@@ -50,8 +50,10 @@ What a coding agent gets for "cut the 0.5 release" in the nbrain repo, for a mad
 | **Start** | | |
 | `brief` | work, life | The brief for a task and project: your rules for it, where the project stands, what came before, what to load |
 | **The record** | | |
-| `search` | work, life | Hybrid search over the record. Each result is strong or weak; `nothing_strong` says there is no good answer |
-| `fetch` | work, life, archive | One thing by id: an item in 8 KB pages with its thread, a library card, the profile, or now |
+| `search` | work, life | Hybrid search over the record; coding-turn hits require opening regardless of their strength |
+| `sessions` | work, life | Complete, unranked session list for a time window, project or harness |
+| `session_search` | work, life | Local BM25 or exact search over full transcripts, with matching-entry receipts |
+| `fetch` | work, life, archive | An item, session or exact session entry in 8 KB pages; also a library card, profile or now |
 | `changes` | work, life | What came in since a time, grouped by thread, with a count per source |
 | `sql` | archive | One read-only `SELECT` over schema `memory`, up to 100 rows |
 | `person` | life | Who someone is: relationship, other names, handles, records, last threads |
@@ -62,7 +64,7 @@ What a coding agent gets for "cut the 0.5 release" in the nbrain repo, for a mad
 | `save` | write | Keep a URL, text or local file; searchable in about a minute, carded within minutes |
 | `remember` | write | Leave a note, signed with the agent's name |
 | `correct` | write | Fix a profile line, record, card or now; applied within a minute, and it sticks |
-| `private` | write | Keep an item or its whole thread out of search, briefs, the profile and the library |
+| `private` | write | Hide an item, thread or session; private sessions stay out of listing, search, fetch and SQL |
 | **Skills and styles** | | |
 | `skill_get` | work, life | The catalog, or one skill or style with a manifest of its files |
 | `skill_save` | write | Add or update a skill or style; an update names the digest of the version it read |
@@ -87,7 +89,7 @@ A token sees only the tools its scopes allow. `search` and `fetch` also answer i
 | A [Cloudflare](https://developers.cloudflare.com/workers-ai/) account with Workers AI | The search judge, `@cf/cloudflare/clef`, which says which hits answer |
 | An OpenAI-compatible chat endpoint | Records, library cards, the curator and now |
 
-Optional: Google Chrome for library captures, [Executor](https://executor.sh) for mail, texts and calendar, [xurl](https://github.com/xdevplatform/xurl) for X bookmarks, [yt-dlp](https://github.com/yt-dlp/yt-dlp) for YouTube, and [restic](https://restic.net) for backups.
+Optional: Google Chrome for library captures, [Executor](https://executor.sh) for mail, texts and calendar, [xurl](https://github.com/xdevplatform/xurl) for X bookmarks, [yt-dlp](https://github.com/yt-dlp/yt-dlp) for YouTube, and [restic](https://restic.net) for backups. Coding-session and bot-chat ingestion requires [Betterleaks v1.10.0](https://github.com/betterleaks/betterleaks/releases/tag/v1.10.0) for local redaction.
 
 ## Quickstart
 
@@ -138,6 +140,8 @@ npm install
 npm run check   # tsc --noEmit
 npm test        # vitest run
 ```
+
+Redaction tests require Betterleaks v1.10.0 on PATH, or an explicit `BETTERLEAKS_BIN`.
 
 Tests run as a made-up owner in a fixed time zone. Point them at a throwaway `BRAIN_HOME` and database, never a live brain. Tool names, inputs and scopes are a public contract: add tools freely, but renaming one or changing its inputs breaks connected clients.
 

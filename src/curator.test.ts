@@ -3,13 +3,14 @@ import type pg from "pg";
 import type * as Models from "./models.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { commit, git } from "./context/git.js";
-import { applyCorrections, applyEdits, applyPrivate, nightly, type Texts, undo } from "./curator.js";
+import { applyCorrections, applyEdits, applyPrivate, nightly, ownerWords, type Texts, undo } from "./curator.js";
 import { triageCards } from "./library/cards.js";
 import { chain } from "./memory/records.js";
 import { writeItems } from "./memory/store.js";
 import { chunkBody, sha256 } from "./memory/text.js";
 import { embedding, fakeModels, restoreFetch } from "./testai.js";
 import { freshDatabase } from "./testdb.js";
+import { buildNow } from "./now.js";
 
 vi.hoisted(() => { process.env.BRAIN_CONTEXT = "/tmp/nbrain-fixes/context-curator"; });
 // the model: an answer per session, and every prompt it was shown
@@ -148,6 +149,34 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("on a throwaway database", () =>
     expect(await applyPrivate(pool)).toBe(2);
     expect(model.prompts.filter(each => each.session === "now")).toHaveLength(2);
     expect(await file("life.md")).toBe("# Life\n\n- Lives in Austin. <!-- owner 2026-10-01 -->\n");
+  });
+
+  it("keeps a private session out of owner evidence, current work material and derived profile lines", async () => {
+    await item("omp:recall-hidden:turn", "omp", "recall-hidden", "Alex: PRIVATE-SESSION-MATERIAL");
+    await item("omp:recall-open:turn", "omp", "recall-open", "Alex: VISIBLE-SESSION-MATERIAL");
+    await pool.query(`INSERT INTO memory.sessions(id,root_id,harness,original_path,archive_path,source_fingerprint,source_bytes,scope,prompt_count,part_count)
+      VALUES ('recall-hidden','recall-hidden','omp','/synthetic/hidden','/synthetic/hidden.zst','test',0,'work',1,1)`);
+    await correction("session:recall-hidden#entry", "PRIVATE-SESSION-CORRECTION");
+    const root = `${CONTEXT}/recall-projects`;
+    await pool.query("UPDATE memory.items SET meta=jsonb_build_object('cwd',$1::text) WHERE id IN ('omp:recall-hidden:turn','omp:recall-open:turn')", [`${root}/project`]);
+    await pool.query("INSERT INTO memory.private(target,by) VALUES('session:recall-hidden','test')");
+    const evidence = await ownerWords(pool, new Date(Date.now() - 86_400_000).toISOString(), new Date(Date.now() + 86_400_000).toISOString());
+    expect(evidence.map(row => row.id)).not.toContain("omp:recall-hidden:turn");
+    expect(evidence.map(row => row.id)).toContain("omp:recall-open:turn");
+    const previousRoots = process.env.NOW_ROOTS;
+    process.env.NOW_ROOTS = root;
+    model.answers.now = () => '{"blocks":[]}';
+    try {
+      await buildNow(pool);
+      expect(model.prompts.at(-1)!.prompt).toContain("VISIBLE-SESSION-MATERIAL");
+      expect(model.prompts.at(-1)!.prompt).not.toContain("PRIVATE-SESSION-MATERIAL");
+      expect(model.prompts.at(-1)!.prompt).not.toContain("PRIVATE-SESSION-CORRECTION");
+      await context({ "work-style.md": "# Work\n- Hidden preference. <!-- omp:recall-hidden:turn 2026-10-20 -->\n", "closed.md": "" });
+      await applyPrivate(pool);
+      expect(await file("work-style.md")).not.toContain("Hidden preference");
+    } finally {
+      if (previousRoots === undefined) delete process.env.NOW_ROOTS; else process.env.NOW_ROOTS = previousRoots;
+    }
   });
 
   it("bug: a correction about a private item showed the model that item's text", async () => {

@@ -1,6 +1,7 @@
 // The one writer of brain.events and brain.cursors for the connectors. An event is deduped on (source, external_id);
 // a read that sees the same source item again changes nothing unless its content changed.
 import type { Pool } from "pg";
+import { redactValue } from "../sessions/redact.js";
 /** What the connectors and captures write. */
 export type EventKind = "mail.received" | "mail.sent" | "text.received" | "text.sent" | "calendar.changed" | "x.bookmark" | "capture" | "chat.turn" | "work.turn" | "source.silent";
 export type EventRoute = "memory" | "knowledge" | "ledger" | "brief" | "drop";
@@ -27,6 +28,7 @@ export type OnSeen = "skip" | "update" | "reroute";
 
 /** Insert; returns whether a row was created, changed, or left alone. */
 export async function insertEvent(pool: Pool, event: NewEvent, onSeen: OnSeen = "skip"): Promise<"inserted" | "changed" | "same"> {
+  if (event.kind === "work.turn" || event.kind === "chat.turn") event = await redactValue(event);
   const at = new Date(event.at).toISOString();
   const values = [event.kind, event.source, event.external_id, at, event.title ?? null, event.body ?? null, event.url ?? null, JSON.stringify(event.data ?? {}), event.route ?? null];
   const conflict =

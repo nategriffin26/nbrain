@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Result, SearchInput } from "../memory/search.js";
+import type * as MemorySearch from "../memory/search.js";
 import { freshDatabase } from "../testdb.js";
 import { findCards } from "./cards.js";
 
@@ -19,7 +20,8 @@ const result = (id: string, input: SearchInput): Result => ({ id, chunk: `${id}#
 let order: string[] = [];
 const calls: SearchInput[] = [];
 
-vi.mock("../memory/search.js", () => ({
+vi.mock("../memory/search.js", async original => ({
+  ...await original<typeof MemorySearch>(),
   search: async (_pool: unknown, input: SearchInput) => {
     calls.push(input);
     const ids = order.filter(id => (input.source ?? [items[id]!.source]).includes(items[id]!.source) && (!input.cards || items[id]!.carded));

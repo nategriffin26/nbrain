@@ -9,6 +9,7 @@ import type { Pool } from "pg";
 import { type Browser, type BrowserContext, chromium, type Page } from "playwright-core";
 import { BRAIN_HOME } from "../config.js";
 import { sha256 } from "../memory/text.js";
+import { visibleSql } from "../memory/search.js";
 
 const VIEWPORT = { width: 1440, height: 900 };
 const LOAD_TIMEOUT = 45_000;
@@ -131,7 +132,7 @@ export async function captureCards(pool: Pool, deadline: number): Promise<number
     while (Date.now() < deadline) {
       const { rows } = await pool.query<{ id: string; kind: string; url: string | null }>(
         `SELECT c.id, c.kind, coalesce(c.url, i.url) AS url FROM memory.cards c JOIN memory.items i ON i.id = c.item_id
-         WHERE c.kind = 'reference' AND c.capture = '{}' AND NOT EXISTS (SELECT 1 FROM memory.private p WHERE p.target = i.id OR p.target = 'thread:' || i.source || ':' || i.thread)
+         WHERE c.kind = 'reference' AND c.capture = '{}' AND ${visibleSql("i")}
          ORDER BY c.at DESC LIMIT 1`);
       const card = rows[0];
       if (!card) break;

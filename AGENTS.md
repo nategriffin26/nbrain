@@ -15,6 +15,9 @@
   cluster (roles are cluster-wide, and schema.sql grants and revokes them), e.g. the same image on another port with
   `POSTGRES_DB=nbrain_t_gate`, then `TEST_DATABASE_URL=postgres://…/nbrain_t_gate`. Without it those tests skip.
 - Checks: `npx tsc --noEmit -p tsconfig.json`, `npx vitest run`.
+- Session archives are append-only: never overwrite a version. After 24 hours idle, only a superseded version whose verified raw bytes exactly prefix the latest verified version may be pruned; reread and hash both immediately before removal. Preserve latest and divergent history.
+- Full-transcript recall stays local: Betterleaks v1.10.0 redacts before indexing or fetch, and the session index never feeds an embedding model or hosted judge. Existing owner-turn retrieval is separate. Run session tests with `BETTERLEAKS_BIN` pointing to that binary and the throwaway Postgres cluster.
+- Backups stage `backup-stage/postgres.sql.gz`; check with `gzip -t`, restore with `gzip -dc postgres.sql.gz | psql -U <superuser>` against the intended restore cluster. Older snapshots may hold uncompressed `postgres.sql`.
 
 ## Decisions
 

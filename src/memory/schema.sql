@@ -267,6 +267,82 @@ create table if not exists memory.uncarded (
 	at timestamptz not null default now()
 );
 
+-- Immutable local transcripts project into a catalog and redacted message parts. No embeddings.
+create table if not exists memory.sessions (
+	id text primary key,
+	root_id text not null,
+	ancestor_ids text[] not null default '{}',
+	harness text not null,
+	original_path text not null unique,
+	archive_path text not null,
+	source_fingerprint text not null,
+	source_bytes bigint not null,
+	parent_id text,
+	cwd text,
+	project text,
+	title text,
+	started timestamptz,
+	ended timestamptz,
+	scope text not null check (scope in ('work', 'life')),
+	scratch boolean not null default false,
+	prompt_count integer not null,
+	part_count integer not null,
+	updated_at timestamptz not null default now()
+);
+create index if not exists sessions_by_root on memory.sessions (root_id);
+create index if not exists sessions_by_project on memory.sessions (project, started);
+create table if not exists memory.session_parts (
+	id bigserial primary key,
+	session_id text not null references memory.sessions(id) on delete cascade,
+	entry text not null,
+	ordinal integer not null,
+	at timestamptz,
+	role text not null,
+	kind text not null check (kind in ('prompt', 'answer', 'brief', 'tool_call', 'tool_result')),
+	tool text,
+	scope text not null check (scope in ('work', 'life')),
+	text text not null,
+	unique (session_id, entry),
+	unique (session_id, ordinal)
+);
+create index if not exists session_parts_by_prompt on memory.session_parts (at, session_id) where kind = 'prompt';
+-- Upgrade the first transcript index so filters run inside the BM25 scan.
+do $$ begin
+	if to_regclass('memory.session_parts_words') is not null
+		and pg_get_indexdef(to_regclass('memory.session_parts_words')) not like '%session_id%' then
+		drop index memory.session_parts_words;
+	end if;
+end $$;
+create index if not exists session_parts_words on memory.session_parts using paradedb (
+	id, (text::pdb.unicode_words('stemmer=english', 'ascii_folding=true')),
+	(session_id::pdb.literal), (scope::pdb.literal), at
+);
+create index if not exists session_parts_exact on memory.session_parts using gin (text gin_trgm_ops);
+
+-- Shared by MCP reads and row-level security, including legacy thread marks on ancestors.
+create or replace function memory.session_visible(session_id text, root_id text, ancestors text[], session_harness text)
+returns boolean language sql stable as $$
+	select not exists (
+		select 1 from memory.private p cross join unnest(array[session_id,root_id] || ancestors) a(id)
+		where p.target = 'session:' || a.id
+		or p.target = 'thread:' || case session_harness when 'dross' then 'chat' else session_harness end || ':' ||
+			case when session_harness='dross' then substring(a.id from 4) else a.id end
+	)
+$$;
+
+-- SQL callers cannot bypass a session's private mark. Owners can still rebuild the projection.
+alter table memory.sessions enable row level security;
+drop policy if exists session_visibility on memory.sessions;
+create policy session_visibility on memory.sessions for select using (
+	current_user = 'memory_writer' OR memory.session_visible(id,root_id,ancestor_ids,harness)
+);
+alter table memory.session_parts enable row level security;
+-- An uncorrelated array lets the literal session-id filter run inside BM25's Top K scan.
+drop policy if exists session_part_visibility on memory.session_parts;
+create policy session_part_visibility on memory.session_parts for select using (
+	session_id = any (array(select s.id from memory.sessions s))
+);
+
 -- memory-mcp's writer role, when it exists (`nbrain init` creates it with its password; memory_reader, the read-only role
 -- memory_ro logs in through, is created and granted by records.ts prepareReader): memory_writer may INSERT a note
 -- (memory.items/chunks), a capture (brain.events) or a correction, mark and unmark private, and set a card's status, so
@@ -279,6 +355,7 @@ do $$ begin
 		grant usage on sequence memory.chunks_id_seq, memory.corrections_id_seq to memory_writer;
 		grant usage on all sequences in schema brain to memory_writer;
 		grant select, insert, delete on memory.private to memory_writer;
+		grant select (id, scope, harness) on memory.sessions to memory_writer;
 		grant select (id), update (status, status_note, status_by, status_at, updated_at) on memory.cards to memory_writer;
 		if exists (select from pg_auth_members m join pg_roles r on r.oid = m.roleid join pg_roles w on w.oid = m.member
 				where r.rolname = 'memory_reader' and w.rolname = 'memory_writer') then

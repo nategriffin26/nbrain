@@ -216,6 +216,27 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("literal search and folded histo
   const strengths = (result: SearchResult) => Object.fromEntries(result.results.map(hit => [hit.id, hit.strength]));
   const vectors = (call: Call) => embedding(call.body.text!, () => Array<number>(1024).fill(0.01));
 
+  it("does not tell a caller to abandon session hits when the short-turn judge finds nothing strong", async () => {
+    await pool.query(`INSERT INTO memory.items(id,source,kind,at,title,body,hash,origin)
+      VALUES ('session-turn-a','omp','message','2026-01-06','Quartz','quartz deployment','fixture','event'),
+             ('session-turn-b','omp','message','2026-01-06','Quartz','quartz build','fixture','event');
+      INSERT INTO memory.chunks(item_id,part,start_at,end_at,heading,people,context,text,embed_hash,embedding)
+      SELECT id,0,0,length(body),title,'','',body,'fixture',array_fill(0.01::real,ARRAY[1024])::halfvec
+      FROM memory.items WHERE id IN ('session-turn-a','session-turn-b')`);
+    fakeModels(call => call.model === "@cf/cloudflare/clef"
+      ? clef(Object.fromEntries(Object.keys(call.body.state!.results).map(n => [`r${n}`, 0.01])))
+      : vectors(call));
+    try {
+      const result = await search(pool, { query: "quartz gearbox", source: ["omp"] });
+      expect(result.results.map(hit => hit.id).sort()).toEqual(["session-turn-a", "session-turn-b"]);
+      expect(result.results.every(hit => hit.strength === "weak")).toBe(true);
+      expect(result.nothing_strong).toBeUndefined();
+    } finally {
+      restoreFetch();
+      await pool.query("DELETE FROM memory.items WHERE id IN ('session-turn-a','session-turn-b')");
+    }
+  });
+
   it("bug: a failing judge (Workers AI 500) must not fail the search: it logs and falls back to holding every word", async () => {
     fakeModels(call => call.model === "@cf/cloudflare/clef" ? [500, serverError] : vectors(call));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

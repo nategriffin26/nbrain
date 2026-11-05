@@ -15,6 +15,7 @@ Connectors run only when named in `CONNECTORS`. Each keeps its position in `brai
 | `calendar` | Executor's `apple-calendar` app, a week back to 30 days ahead, read whole; a missing upcoming event is marked deleted | 5 min |
 | `x` | New bookmarks through `xurl`, stopping at the first one already known; the first run only records where the bookmarks are | 06:45 and 17:45 |
 | `omp` | Your typed turns in top-level omp sessions, each with the answer that closed it; subagent and scratch sessions are skipped | 5 min |
+| `sessions` | Full transcripts and nested subagents from omp, Claude Code, Codex, opencode and Dross threads | 5 min |
 
 Each X bookmark is hydrated from free sources: the post, its thread and parents, quotes, the article, replies, linked pages (through the rendering page reader, `PAGE_READER`) and a model's description of each image.
 
@@ -50,6 +51,7 @@ Reciprocal rank fusion merges them, one hit per item. An item id in the query co
 What comes back is built to be read honestly:
 
 - **Strong or weak.** A result is strong when the judge gives it at least even odds of answering the query (0.5, Clef's yes/no boundary, fixed before it was measured), it falls in the dates the query names (by when it was sent, or a nearby message in its conversation naming that day), and it holds the names the query names. Without the judge, a result is strong only when it holds every word that matters. On the recall eval the judge found 124 of 172 answers, against 127 for the local cross-encoder it replaced (no significant difference) and 120 with no judge, where 101 answerable questions got nothing strong; of 19 questions with no answer, it called 2 strong. `nothing_strong: true` means no result is strong, and the tool tells agents to say so instead of guessing.
+  Coding-turn hits are an exception to the abstention verdict: `nothing_strong` is omitted when an omp result is present. Open the hit even when its short excerpt is weak; use `session_search` to search the whole transcript.
 - **Folding.** One mail thread, one order's mails and delivery notices, and texts already shown in another hit's conversation fold into one result with `more: n`. A result that folds look-alikes lists each of them (date, title, id) in `folded`, itself included, oldest first: the sequence (ordered, shipped, delivered; a value set, then changed) is what says which one is current, so folding keeps it.
 - **Exact.** `exact: true` finds the query word for word (case-insensitive) in an item's text or title, newest first, every match strong: a name, an order number, a phrase someone wrote. It uses no model, keeps every filter and the private and code rules, and reads a trigram index: usually well under half a second, up to about two for very common words or two-letter strings, which trigrams can't narrow.
 - **Conversations.** A text, or a bot chat turn imported in pieces, is shown with the messages around it in its thread, and nearby conversations in one thread show as one.
@@ -58,6 +60,20 @@ What comes back is built to be read honestly:
 - **Private.** Items and threads marked with `private` are left out of search, and `fetch` refuses them, unless a life-scope caller passes `private: true`. Verification codes are left out unless the query asks for a code.
 
 `fetch` opens one result (or `<id>#<chunk>`) in 8 KB pages with the people on it and the neighbouring messages of its thread; it also opens a library card (`card:…`), the profile (`profile`) or now (`now`). `changes` lists what arrived since a time ("yesterday", "this morning", "3 days ago", "Monday" for the most recent one, a date), newest first, grouped by thread, with a count per source. `person` answers who someone is. `sql` runs one read-only `SELECT` over schema `memory` as a role that can read nothing else; it is the way to count, sum or pick the latest.
+
+### Session recall
+
+The `sessions` connector retains raw JSONL bytes in `$BRAIN_HOME/sessions/<harness>/<month>/<id>.<digest>.jsonl.zst`. SQLite sessions and Dross threads are exported as JSONL rows. Each changed version is written once; the catalog moves to it only after redaction and projection commit. A missing source does not remove its archive. After 24 hours idle, an older version may be pruned only when its freshly verified bytes exactly prefix the latest verified version; divergent history remains.
+
+`memory.sessions` is the catalog. `memory.session_parts` stores one redacted message part per row: full prompts, answers and tool calls, with tool results clipped to 2 KB after redaction. Thinking and binary payloads are omitted from the projection. Betterleaks v1.10.0 and fixed credential rules produce `[REDACTED:<type>:<digest>]` markers. Raw archives remain local; fetch also redacts before returning text. There are no transcript embeddings or hosted judge calls.
+
+| Operation | Behavior |
+|---|---|
+| `sessions` | Every matching session, oldest first, without a cap. A time window selects owner prompts inside it, even if their session started earlier. `include_subagents` selects any visible part instead. |
+| `session_search` | BM25 over full transcripts, with a small prior for a project's own sessions when the query names it; `exact: true` matches the whole query literally. Each root session appears once, with the matching entry and any subagent identified. |
+| `fetch session:<id>#<entry>` | Opens the entry in 8 KB pages. Prompts and answers are complete; tool calls render on one line. Tool results show their first line, except the selected receipt expands to its indexed 2 KB so the match can be cited. |
+
+Coding sessions are work scope; Dross threads and life-tool results require life scope. Nested Executor calls and persistent evaluation cells retain life provenance. A session private mark hides it and its descendants from session listing, search, fetch and SQL, without a private-read override. The existing brief, profile and curator continue to use owner turns, not the full transcript index. Session hits carry no answer-strength verdict: fetch receipts before citing them.
 
 ### Records
 
@@ -157,7 +173,7 @@ Every caller is a token: an agent name and its scopes. A tool is offered to a to
 
 | Tool | Scopes |
 |---|---|
-| `brief`, `search`, `changes`, `library`, `skill_get` | work, life |
+| `brief`, `search`, `sessions`, `session_search`, `changes`, `library`, `skill_get` | work, life |
 | `fetch` | work, life, archive |
 | `person` | life |
 | `sql` | archive |
@@ -173,6 +189,7 @@ Privacy and safety:
 - **Local.** Postgres, the context repo and embeddings run on your machine. The server listens on 127.0.0.1; anything remote comes through a proxy you set up ([connect](connect.md#remote-access)).
 - **What leaves.** Brain content leaves only in model calls: to Workers AI (each search's query and its first 30 hits, to judge) and to `LLM_URLS` (records, library triage, image descriptions, the curator, now); and in the Sunday message through `BRAIN_NOTIFY`. Other outbound requests fetch what you asked to keep: a saved URL, X bookmarks and their links, YouTube transcripts, the pages of reference cards.
 - **Private.** `private` marks an item or its whole thread. Search, `fetch`, `changes`, briefs, the curator's evidence, now, the library and its captures leave it out; only a life-scope `search` or `fetch` with `private: true` opens it. Within a minute, profile and `closed.md` lines sourced to it (or to a record read from it) are removed in one commit, and now is rewritten; corrections about it are never shown to a model. It stays in the record, and `sql` still reads it.
+  Session private marks also hide the corresponding owner turns from ordinary reads. Session catalog and part tables enforce private marks for SQL readers; unlike other items, private sessions have no read override.
 - **Least privilege.** The server never gets the Postgres superuser. It reads as `memory_ro`, which can only `SELECT` schema `memory`, and writes as `memory_writer`, which can only insert notes, saves and corrections, mark and unmark private, and set a card's status.
 - **Hashed tokens.** `$BRAIN_HOME/memory-mcp/tokens.json` stores only the SHA-256 of each token.
 - **Logs and a kill switch.** Each call is logged with its arguments clipped and never its result; writes log metadata only. `touch $BRAIN_HOME/memory-mcp/DISABLED` makes `/mcp` answer 503.

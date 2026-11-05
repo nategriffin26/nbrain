@@ -68,4 +68,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("memory_writer's grants", () => 
     const { rows } = await admin.query("SELECT (SELECT count(*)::int FROM memory.items) AS items, (SELECT count(*)::int FROM memory.private) AS private, (SELECT text FROM memory.corrections) AS correction, (SELECT status FROM memory.cards) AS status");
     expect(rows[0]).toEqual({ items: 1, private: 0, correction: "It was long replies.", status: "tried" });
   }, 60_000);
+  it("can unmark a private session without granting the writer access to transcript content", async () => {
+    await admin.query(`INSERT INTO memory.sessions(id,root_id,harness,original_path,archive_path,source_fingerprint,source_bytes,scope,prompt_count,part_count)
+      VALUES ('scope-work','scope-work','omp','/synthetic/work','/synthetic/work.zst','test',0,'work',0,0),
+             ('scope-life','scope-life','dross','/synthetic/life','/synthetic/life.zst','test',0,'life',0,0)`);
+    const call: Call = { agent: work, reader, writer, local: true };
+    await expect(WRITE_TOOLS.private!.run(call, { id: "session:scope-life" })).rejects.toThrow(ScopeError);
+    expect(await WRITE_TOOLS.private!.run(call, { id: "session:scope-work#entry" })).toMatchObject({ private: true, changed: true });
+    expect((await reader.query("SELECT id FROM memory.sessions WHERE id='scope-work'")).rows).toEqual([]);
+    await expect(writer.query("SELECT archive_path FROM memory.sessions")).rejects.toThrow(/permission denied/);
+    await expect(writer.query("SELECT text FROM memory.session_parts")).rejects.toThrow(/permission denied/);
+    expect(await WRITE_TOOLS.private!.run(call, { id: "session:scope-work", private: false })).toMatchObject({ private: false, changed: true });
+    expect((await reader.query("SELECT id FROM memory.sessions WHERE id='scope-work'")).rows).toEqual([{ id: "scope-work" }]);
+  });
 });

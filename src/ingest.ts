@@ -20,6 +20,8 @@ import { writeNow } from "./now.js";
 import { indexSkills } from "./skills/indexer.js";
 import { slots } from "./time.js";
 import { weeklyTick } from "./weekly.js";
+import { SESSION_ARCHIVE } from "./config.js";
+import { ingestSessions } from "./sessions/store.js";
 
 const MINUTE = 60_000;
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 8 });
@@ -43,6 +45,7 @@ const LOOPS: Loop[] = [
   { name: "calendar", every: 5 * MINUTE, run: () => pollCalendar(pool) },
   { name: "x", every: MINUTE, run: async () => { if (xDue()) await pollX(pool); } },
   { name: "omp", every: 5 * MINUTE, run: () => pollOmp(pool) },
+  { name: "sessions", every: 5 * MINUTE, run: () => ingestSessions(pool, { ...SESSION_ARCHIVE, drossPool: pool }) },
 ].filter(loop => connectors.has(loop.name));
 LOOPS.push(
   { name: "memory_events", every: MINUTE, run: () => indexEvents(pool) },

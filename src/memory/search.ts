@@ -73,7 +73,7 @@ class Sql {
 
 /** Apply this to every path that can expose an item, including conversation neighbours and record provenance. */
 export function visibleSql(alias: string): string {
-  return `NOT EXISTS (SELECT 1 FROM memory.private v WHERE v.target = ${alias}.id OR v.target = 'thread:' || ${alias}.source || ':' || ${alias}.thread)
+  return `NOT EXISTS (SELECT 1 FROM memory.private v WHERE v.target = ${alias}.id OR v.target = 'thread:' || ${alias}.source || ':' || ${alias}.thread OR v.target = 'session:' || CASE WHEN ${alias}.source = 'chat' THEN 'dr:' ELSE '' END || ${alias}.thread)
     AND (${alias}.source <> 'record' OR NOT EXISTS (SELECT 1 FROM memory.items s JOIN memory.private v ON v.target = s.id OR v.target = 'thread:' || s.source || ':' || s.thread WHERE s.id = coalesce(${alias}.meta->>'item', ${alias}.meta->'sources'->0->>'item')))`;
 }
 
@@ -406,7 +406,7 @@ export async function search(pool: Pool, input: SearchInput, now = new Date()): 
     };
   });
   return {
-    results, ...(!results.some(row => row.strength === "strong") ? { nothing_strong: true as const } : {}), ...(person ? { person: person.map(({ id, name, close }) => ({ id, name, ...(close ? { close } : {}) })) } : {}), ...(named.length ? { people: named.map(({ id, name }) => ({ id, name })) } : {}),
+    results, ...(!results.some(row => row.strength === "strong" || row.source === "omp") ? { nothing_strong: true as const } : {}), ...(person ? { person: person.map(({ id, name, close }) => ({ id, name, ...(close ? { close } : {}) })) } : {}), ...(named.length ? { people: named.map(({ id, name }) => ({ id, name })) } : {}),
     ...(date ? { date: date.label } : {}), ms: Date.now() - started, channels: Object.fromEntries(Object.entries(channels).map(([name, list]) => [name, list.length])),
     ...(input.trace ? { trace: { channels: Object.fromEntries(Object.entries(channels).map(([name, list]) => [name, [...new Set(list.map(each => each.item))]])), fused: fusedOrder } } : {}),
   };

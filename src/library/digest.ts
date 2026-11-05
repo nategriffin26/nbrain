@@ -2,6 +2,7 @@
 // older ones nobody has tried), and how many cards the week added. Plain markdown, short enough for a phone.
 import type { Pool } from "pg";
 import { readNow } from "../context/profile.js";
+import { visibleSql } from "../memory/search.js";
 
 const SHOWN = 5;
 const WEEK_MS = 7 * 24 * 3600_000;
@@ -9,7 +10,7 @@ const WEEK_MS = 7 * 24 * 3600_000;
 export async function libraryDigest(pool: Pool, now: Date): Promise<string> {
   const weekAgo = new Date(now.getTime() - WEEK_MS);
   const inFlight = readNow(["work"]).blocks.map(block => block.name);
-  const notPrivate = "NOT EXISTS (SELECT 1 FROM memory.private p WHERE p.target = i.id OR p.target = 'thread:' || i.source || ':' || i.thread)";
+  const notPrivate = visibleSql("i");
   const { rows: [counted] } = await pool.query<{ added: number }>(
     `SELECT count(*)::int AS added FROM memory.cards c JOIN memory.items i ON i.id = c.item_id WHERE c.at >= $1 AND c.at <= $2 AND ${notPrivate}`, [weekAgo, now]);
   // each card under the first of its projects that is in flight; one per project before any project gets a second

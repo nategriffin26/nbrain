@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
 import { MCP_TOOLS } from "./contract.js";
-import { type Agent, type Call, ScopeError, sourcesFor, type Tool } from "./types.js";
+import { type Agent, type Call, has, ScopeError, sourcesFor, type Tool } from "./types.js";
 import { embed } from "../memory/store.js";
 import { chunkBody, sha256 } from "../memory/text.js";
 
@@ -73,6 +73,21 @@ export function privateTarget(agent: Agent, id: string, item: { source: string; 
 
 async function markPrivate(call: Call, args: Record<string, unknown>) {
   const writer = writerOf(call);
+  if (clean(args.id).startsWith("session:")) {
+    const id = clean(args.id).split("#", 1)[0]!;
+    // The writer can read only identity/scope metadata, including for an already-private session.
+    const { rows: [session] } = await writer.query<{ id: string; scope: string; harness: string }>("SELECT id,scope,harness FROM memory.sessions WHERE id=$1", [id.slice(8)]);
+    if (!session || (session.scope === "life" && !has(call.agent, "life") && !has(call.agent, "archive")) ||
+      (session.scope === "work" && !has(call.agent, "work") && !has(call.agent, "life") && !has(call.agent, "archive"))) {
+      throw new ScopeError("No session is available at that pointer.");
+    }
+    if (args.private === false) {
+      const { rowCount } = await writer.query("DELETE FROM memory.private WHERE target=$1", [id]);
+      return { target: id, private: false, changed: rowCount !== 0 };
+    }
+    const { rowCount } = await writer.query("INSERT INTO memory.private(target,why,by) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", [id, clean(args.why) || null, call.agent.signer]);
+    return { target: id, private: true, changed: rowCount !== 0, next: "Hidden from session listing, search, fetch and SQL." };
+  }
   const id = clean(args.id).replace(/#\d+$/, "");
   const { rows: [item] } = await call.reader.query<{ source: string; thread: string | null }>("SELECT source, thread FROM memory.items WHERE id = $1", [id]);
   const target = privateTarget(call.agent, id, item, args.thread === true);

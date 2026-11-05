@@ -9,7 +9,7 @@ import { ENRICH_PROMPT, type Enriched, enrichedChunks, enrichmentInput, parseEnr
 import { canonicalUrl } from "../capture/read.js";
 import { readNow, readProfile } from "../context/profile.js";
 import { CARD_KINDS } from "../mcp/contract.js";
-import { search } from "../memory/search.js";
+import { search, visibleSql } from "../memory/search.js";
 import { type ItemInput, writeItems } from "../memory/store.js";
 import { chunkBody, sha256 } from "../memory/text.js";
 import { complete, replyJson, roleChoice } from "../models.js";
@@ -192,8 +192,6 @@ export async function correctCard(pool: Pool, id: string, fields: { what?: strin
 
 const ITEM_COLUMNS = "i.id, i.source, i.kind, i.ext_id, i.thread, i.thread_title, i.title, i.at, i.sender, i.sender_name, i.recipients, i.from_me, i.url, i.body, i.meta, i.origin, i.event_id";
 
-const PRIVATE = (i: string) => `EXISTS (SELECT 1 FROM memory.private p WHERE p.target = ${i}.id OR p.target = 'thread:' || ${i}.source || ':' || ${i}.thread)`;
-
 /** Bookmarks and saved pages not yet read at their current version, newest first; private ones never. */
 export async function pendingItems(pool: Pool, limit: number): Promise<ItemRow[]> {
   const { rows } = await pool.query<ItemRow>(
@@ -202,7 +200,7 @@ export async function pendingItems(pool: Pool, limit: number): Promise<ItemRow[]
      WHERE i.source = ANY($1)
        AND NOT EXISTS (SELECT 1 FROM memory.cards c WHERE c.item_id = i.id AND c.hash = i.hash)
        AND NOT EXISTS (SELECT 1 FROM memory.uncarded u WHERE u.item_id = i.id AND u.hash = i.hash)
-       AND NOT ${PRIVATE("i")}
+       AND ${visibleSql("i")}
      ORDER BY i.at DESC LIMIT $2`, [CARD_SOURCES, limit]);
   return rows;
 }
@@ -235,7 +233,7 @@ const cardOf = (row: CardRow): Omit<Card, "strength"> => ({
 
 /** One card by id (card:…), or undefined when there is none or its item is private. */
 export async function readCard(pool: Pool, id: string): Promise<Omit<Card, "strength"> | undefined> {
-  const { rows } = await pool.query<CardRow>(`${CARD_SELECT} WHERE c.id = $1 AND NOT ${PRIVATE("i")}`, [id]);
+  const { rows } = await pool.query<CardRow>(`${CARD_SELECT} WHERE c.id = $1 AND ${visibleSql("i")}`, [id]);
   return rows[0] && cardOf(rows[0]);
 }
 
@@ -249,7 +247,7 @@ export async function findCards(pool: Pool, input: FindCards): Promise<FoundCard
   if (sources.length === 0) return { cards: [], nothing_strong: true };
   const filters = { ...(input.kind ? { kind: input.kind } : {}), ...(input.status ? { status: input.status } : {}), ...(input.project ? { project: input.project } : {}) };
   const found = await search(pool, { query: input.query, source: sources, limit, ...(input.to ? { to: input.to } : {}), cards: filters });
-  const { rows } = await pool.query<CardRow>(`${CARD_SELECT} WHERE c.item_id = ANY($1) AND NOT ${PRIVATE("i")}`, [found.results.map(result => result.id)]);
+  const { rows } = await pool.query<CardRow>(`${CARD_SELECT} WHERE c.item_id = ANY($1) AND ${visibleSql("i")}`, [found.results.map(result => result.id)]);
   const byItem = new Map(rows.map(row => [row.item_id, cardOf(row)]));
   const cards = found.results.flatMap(result => byItem.has(result.id) ? [{ ...byItem.get(result.id)!, strength: result.strength }] : []);
   if (cards.some(card => card.strength === "strong")) return { cards };

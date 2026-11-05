@@ -48,6 +48,7 @@ import { query } from "../memory/records.js";
 import { read, resolvePerson, search, type SearchInput } from "../memory/search.js";
 import { sha256 } from "../memory/text.js";
 import { registerSkills, SKILL_TOOLS, skillsInstructions } from "../skills/mcp.js";
+import { fetchSession, listSessions, searchSessions, type SessionSearchInput, type SessionWindow } from "../sessions/search.js";
 
 const HOME = process.env.MEMORY_MCP_HOME ?? `${BRAIN_HOME}/memory-mcp`;
 const PORT = Number(process.env.MEMORY_MCP_PORT ?? 8830);
@@ -100,6 +101,7 @@ async function updated(files: readonly string[]): Promise<string | undefined> {
 async function fetchScoped(agent: Agent, id: string, page?: number, privateItems = false) {
   if (privateItems && !has(agent, "life")) throw new ScopeError(`Not in ${agent.name}'s scope: private items need life scope.`);
   const want = id.trim();
+  if (want.startsWith("session:")) return fetchSession(reader, want, page, { life: has(agent, "life") || has(agent, "archive") });
   if (want === "profile") {
     const files = profileFiles(agent.scopes);
     return { id: "profile", title: `${owner}'s profile`, text: files.map(each => each.text.trim()).join("\n\n"), updated: await updated(files.map(each => each.file)), metadata: { files: files.map(each => each.file) } };
@@ -133,6 +135,8 @@ const TOOLS: Record<string, Tool> = {
     ...MCP_TOOLS.search, description: `${MCP_TOOLS.search.description} Work-scope tokens search only ${WORK_SOURCES.join(", ")}.`,
     scopes: ["work", "life"], run: (call, args) => searchScoped(call.agent, args),
   },
+  sessions: { ...MCP_TOOLS.sessions, scopes: ["work", "life"], run: (call, args) => listSessions(reader, args as SessionWindow, { life: has(call.agent, "life") }) },
+  session_search: { ...MCP_TOOLS.session_search, scopes: ["work", "life"], run: (call, args) => searchSessions(reader, args as unknown as SessionSearchInput, { life: has(call.agent, "life") }) },
   fetch: { ...MCP_TOOLS.fetch, scopes: ["work", "life", "archive"], run: (call, args) => fetchScoped(call.agent, String(args.id), args.page as number | undefined, args.private === true) },
   changes: {
     ...MCP_TOOLS.changes, scopes: ["work", "life"],

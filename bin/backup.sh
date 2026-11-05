@@ -12,8 +12,10 @@ export RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-$BRAIN_HOME/restic-password
 
 stage="$BRAIN_HOME/backup-stage"
 mkdir -p "$stage"
-docker exec "$PG_CONTAINER" pg_dumpall -U "$(echo "$DATABASE_URL" | sed -E 's#^[a-z]+://([^:]+):.*#\1#')" >"$stage/postgres.sql.tmp"
-mv "$stage/postgres.sql.tmp" "$stage/postgres.sql"
+# --rsyncable (GNU gzip from Homebrew, first on PATH; macOS gzip lacks it) keeps unchanged data byte-identical between
+# dumps, so restic stores only what changed.
+docker exec "$PG_CONTAINER" pg_dumpall -U "$(echo "$DATABASE_URL" | sed -E 's#^[a-z]+://([^:]+):.*#\1#')" | gzip --rsyncable >"$stage/postgres.sql.gz.tmp"
+mv "$stage/postgres.sql.gz.tmp" "$stage/postgres.sql.gz"
 
 # Repos: everything git doesn't ignore, plus local/.
 read -r -a extra <<<"${BACKUP_PATHS:-}"

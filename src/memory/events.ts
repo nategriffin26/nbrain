@@ -6,6 +6,7 @@ import { researchId, savedId, whyContexts } from "../capture/id.js";
 import { cursorOk, readCursor, type NewEvent } from "../events/store.js";
 import { type ItemInput, writeItems } from "./store.js";
 import { cleanText, foldHandle } from "./text.js";
+import { redactValue } from "../sessions/redact.js";
 
 /** A brain.events row as the indexer reads it. */
 interface EventRow { id: number; kind: NewEvent["kind"]; external_id: string | null; at: string; title: string | null; body: string | null; url: string | null; data: Record<string, unknown>; rev: string }
@@ -72,6 +73,16 @@ export async function indexEvents(pool: Pool): Promise<number> {
     );
     if (rows.length === 0) break;
     after = Number(rows[rows.length - 1]!.rev);
+    // External chat producers also write events directly; scrub their intake before any derived surface reads it.
+    const conversations = rows.filter(row => row.kind === "chat.turn" || row.kind === "work.turn");
+    const safe = await redactValue(conversations);
+    for (let index = 0; index < conversations.length; index++) {
+      const original = conversations[index]!, redacted = safe[index]!;
+      if (JSON.stringify(original) !== JSON.stringify(redacted)) {
+        await pool.query("UPDATE brain.events SET title=$2,body=$3,url=$4,data=$5 WHERE id=$1 AND rev=$6", [original.id, redacted.title, redacted.body, redacted.url, JSON.stringify(redacted.data), original.rev]);
+        Object.assign(original, redacted);
+      }
+    }
     const items = rows.flatMap(row => itemOfEvent(row) ?? []);
     written += await writeItems(pool, items);
     // an event whose copy was not rewritten (unchanged content) still takes over the item's link to its row

@@ -14,6 +14,7 @@ The [quickstart](../README.md#quickstart) gets a brain running in two shells. Th
 | `memory-mcp/` | `tokens.json` (hashes only) and the `DISABLED` kill switch |
 | `logs/` | Each job's log, `memory-mcp.log` and `memory-mcp-writes.log` |
 | `eval/` | Your eval questions and results |
+| `sessions/` | Append-only compressed transcript versions by harness and month; raw bytes stay local |
 
 `nbrain init` is safe to run again: it never overwrites a file or resets a role that exists. The two roles are created with a connection limit above memory-mcp's pool (`MEMORY_POOL` in `src/config.ts`); `nbrain doctor` flags a role whose limit is below it. The first run writes `env` and stops. The second creates the folders, starts the context repo from `templates/context`, applies the schema and creates the server's two database roles, `memory_ro` and `memory_writer`. Their passwords go into `env`, or into the login Keychain when `KEYCHAIN_PREFIX` is set.
 
@@ -47,7 +48,7 @@ Name the ones you want in `CONNECTORS` (for example `CONNECTORS=gmail,imessage,c
 
 - **Mail, texts, calendar.** Run an [Executor](https://executor.sh) with the `gmail`, `apple-messages` and `apple-calendar` apps connected. Ingest calls its MCP server at `EXECUTOR_MCP_URL` with the CLI key from `~/.executor/v2/cli/keys.json`.
 - **X bookmarks.** Install [xurl](https://github.com/xdevplatform/xurl) and sign it in to your account. Each post read costs money on X's API, so only new bookmarks are read, twice a day.
-- **Coding sessions.** Reads [omp](https://github.com/can1357/oh-my-pi) sessions from `OMP_SESSIONS`.
+- **Coding sessions.** `omp` keeps owner turns for the existing brief and curator. `sessions` additionally archives omp, Claude Code, Codex, opencode (including legacy storage), subagents, and Dross threads when `public.messages`/`public.threads` exist in the configured database. It polls every five minutes. Set source paths below; an empty path disables that source. Install [Betterleaks v1.10.0](https://github.com/betterleaks/betterleaks/releases/tag/v1.10.0), set `BETTERLEAKS_BIN` if it is not on PATH, add `sessions` to `CONNECTORS`, then run `nbrain session-ingest` for the first pass. Scanner failure stops projection; raw archives remain intact. No session embeddings or hosted transcript judge are used.
 - **Readers.** `yt-dlp` reads YouTube. For pages that render in JavaScript and for the pages X posts link to, set `PAGE_READER` to a command that answers `read <urls> --json --lane <name> --max-wait <s> --max-chars 0`; without it, thin pages are kept as read and linked pages are skipped.
 - **Library captures.** `npm install` brings `playwright-core`, which drives an installed Google Chrome, headless. Without Chrome, captures wait: the run stops, logs it, and leaves the cards for when Chrome is there.
 
@@ -59,7 +60,9 @@ The Sunday message goes out through `BRAIN_NOTIFY`: a command that reads the tex
 
 ## Backups
 
-`bin/backup.sh` takes a `pg_dumpall` from the Postgres container (`PG_CONTAINER`), then backs up `$BRAIN_HOME` (without raw Postgres data) and the repository to any [restic](https://restic.net) repository in `RESTIC_REPOSITORY`. Add paths with `BACKUP_PATHS` and excludes with `$BRAIN_HOME/backup-excludes`. An append-only restic REST server means this machine cannot delete or change snapshots.
+`bin/backup.sh` requires GNU gzip with `--rsyncable` (on macOS, `brew install gzip`). It streams `pg_dumpall` from `PG_CONTAINER` through rsyncable gzip into `$BRAIN_HOME/backup-stage/postgres.sql.gz.tmp`, then renames it only when the pipeline succeeds. Rsyncable compression lets restic deduplicate changed dumps. It backs up `$BRAIN_HOME` (without raw Postgres data) and the repository to `RESTIC_REPOSITORY`. Add harness source folders with `BACKUP_PATHS` and excludes with `$BRAIN_HOME/backup-excludes`; `BACKUP_PATHS` is whitespace-separated and cannot represent paths containing spaces. An append-only restic REST server prevents this machine from deleting or changing snapshots.
+
+After restoring a snapshot, check the dump with `gzip -t postgres.sql.gz`; restore to the intended Postgres cluster with `gzip -dc postgres.sql.gz | psql -U <superuser>`. Older snapshots may contain uncompressed `postgres.sql`, restored with `psql -U <superuser> -f postgres.sql`. The session archive is included under `$BRAIN_HOME/sessions`; retain it with the database so catalog pointers remain readable.
 
 ## Linux
 
@@ -86,9 +89,12 @@ All in `$BRAIN_HOME/env`; [`env.example`](../env.example) has each one with a co
 | `LLM_URLS` | `http://127.0.0.1:4000` | OpenAI-compatible endpoints, tried in order |
 | `LLM_API_KEY`, `LLM_API_KEY_FILE` | | The key, or a file holding it |
 | `MODEL_READING`, `MODEL_CARDS`, `MODEL_EXTRACTION`, `MODEL_CURATOR` | `src/models.ts` | Per-role model, `model` or `model@thinking`: reading (image descriptions), cards (library cards, enrichment), extraction (records), curator (the curator and now) |
-| `CONNECTORS` | none | `gmail`, `imessage`, `calendar`, `x`, `omp` |
+| `CONNECTORS` | none | `gmail`, `imessage`, `calendar`, `x`, `omp`, `sessions` |
 | `EXECUTOR_MCP_URL` | `http://127.0.0.1:4312/mcp` | Executor's MCP server |
 | `OMP_SESSIONS` | `~/.omp/agent/sessions` | omp session files |
+| `CLAUDE_SESSIONS`, `CODEX_SESSIONS` | `~/.claude/projects`, `~/.codex/sessions` | Transcript source roots |
+| `OPENCODE_DATABASE`, `OPENCODE_STORAGE` | `~/.local/share/opencode/opencode.db`, `~/.local/share/opencode/storage` | Current database and source-only legacy sessions |
+| `BETTERLEAKS_BIN` | `betterleaks` | Pinned v1.10.0 executable; required for transcript and omp/chat redaction |
 | `NOW_ROOTS`, `NOW_DESKS` | | Where now finds repos and desks |
 | `BRAIN_NOTIFY` | | The command that sends the Sunday message |
 | `YTDLP_BIN`, `XURL_BIN` | `yt-dlp`, `xurl` | Reader binaries |
@@ -119,4 +125,5 @@ Put `bin/` on your `PATH` to type `nbrain`. `nbrain help` lists them:
 | `now [--dry-run]` | Writes `now.md` now, or only prints it |
 | `weekly [--send]` | Prints this week's Sunday message, or sends it |
 | `omp` | Reads new omp sessions now |
+| `session-ingest` | Archives and projects new or changed sessions without changing prior archive bytes |
 | `eval [questions.json]` | The retrieval eval |

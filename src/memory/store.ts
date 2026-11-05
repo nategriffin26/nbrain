@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import * as z from "zod";
 import { OWNER } from "../config.js";
 import { chunkBody, cleanText, sha256 } from "./text.js";
+import { redactValue } from "../sessions/redact.js";
 
 export const EMBED_MODEL = "qwen3-embedding:0.6b";
 const EMBED_BATCH = 16;
@@ -98,6 +99,12 @@ function embedInput(context: string, heading: string, at: Date, people: string, 
  */
 export async function writeItems(pool: Pool, items: readonly ItemInput[]): Promise<number> {
   if (items.length === 0) return 0;
+  const conversations = items.filter(item => item.source === "omp" || item.source === "chat");
+  if (conversations.length) {
+    const redacted = await redactValue(conversations.map(({ contexts, ...item }) => ({ ...item, contextEntries: contexts ? [...contexts] : undefined })));
+    const safe = new Map(redacted.map(({ contextEntries, ...item }) => [item.id, { ...item, ...(contextEntries ? { contexts: new Map(contextEntries) } : {}) }]));
+    items = items.map(item => safe.get(item.id) ?? item);
+  }
   const { rows: existing } = await pool.query<{ id: string; source: string; ext_id: string | null; hash: string; origin: string }>(
     "SELECT id, source, ext_id, hash, origin FROM memory.items WHERE id = ANY($1) OR (source, ext_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))",
     [items.map(item => item.id), items.map(item => item.source), items.map(item => item.ext_id ?? "")],

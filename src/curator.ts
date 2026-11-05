@@ -16,6 +16,7 @@ import { chain } from "./memory/records.js";
 import { complete, replyJson } from "./models.js";
 import { writeNow } from "./now.js";
 import { localTime } from "./time.js";
+import { visibleSql } from "./memory/search.js";
 
 const O = OWNER.name;
 const PROFILE = new Set<string>(PROFILE_FILES.map(each => each.file));
@@ -276,9 +277,11 @@ export async function applyCorrections(pool: Pool): Promise<number> {
 
 /** SQL: `ref` (an item id, with or without its #chunk, a record id or a card id) names an item marked private, by
  *  itself or by its thread. */
-export const privateRef = (ref: string) => `EXISTS (SELECT 1 FROM memory.items i
+export const privateRef = (ref: string) => `(EXISTS (SELECT 1 FROM memory.items i
   WHERE i.id IN (regexp_replace(${ref}, '#\\d+$', ''), (SELECT r.item_id FROM memory.records r WHERE r.id = ${ref}), (SELECT k.item_id FROM memory.cards k WHERE k.id = ${ref}))
-    AND NOT ${NOT_PRIVATE})`;
+    AND NOT ${NOT_PRIVATE}) OR EXISTS (SELECT 1 FROM memory.sessions s
+      WHERE 'session:' || s.id = split_part(${ref}, '#', 1)
+        AND NOT memory.session_visible(s.id,s.root_id,s.ancestor_ids,s.harness)))`;
 
 /** The sources a closed.md entry carries: who closed it and where the line came from. */
 const closedSources = (raw: string) => {
@@ -330,7 +333,7 @@ export function ownerTurns(body: string, owner = O): string {
 }
 
 /** SQL: item `i` is not marked private, by itself or by its thread. */
-export const NOT_PRIVATE = "NOT EXISTS (SELECT 1 FROM memory.private p WHERE p.target = i.id OR p.target = 'thread:' || i.source || ':' || i.thread)";
+export const NOT_PRIVATE = visibleSql("i");
 
 /** The owner's own words that reached the record between `since` and `until`: their turns with the bots and their
  *  prompts in coding sessions, notes bots left (they quote the owner), and records the owner is a party to. Never private. */

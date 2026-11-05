@@ -15,6 +15,7 @@ const COMMANDS: Record<string, Command> = {
   now: ["write now.md now  [--dry-run]", async () => (await import("./now.js")).nowCommand],
   weekly: ["print this week's Sunday message  [--send]", async () => (await import("./weekly.js")).weeklyCommand],
   omp: ["read new omp sessions now", async () => (await import("./connectors/omp.js")).ompCommand],
+  "session-ingest": ["archive and index new or changed harness sessions and bot threads", async () => (await import("./sessions/cli.js")).sessionIngestCommand],
   eval: ["retrieval eval: facts found in the top 10  [questions.json]", async () => (await import("./eval/recall.js")).evalCommand],
 };
 

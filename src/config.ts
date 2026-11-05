@@ -10,6 +10,17 @@ export const CONTEXT = process.env.BRAIN_CONTEXT ?? `${BRAIN_HOME}/context`;
 /** The owner's wall-clock zone: days, "this morning" and every rendered time are in it. */
 export const ZONE = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+/** Session recall stays local; an empty source path disables that harness. */
+export const SESSION_ARCHIVE = {
+  archiveRoot: `${BRAIN_HOME}/sessions`,
+  ompRoot: process.env.OMP_SESSIONS ?? `${homedir()}/.omp/agent/sessions`,
+  claudeRoot: process.env.CLAUDE_SESSIONS ?? `${homedir()}/.claude/projects`,
+  codexRoot: process.env.CODEX_SESSIONS ?? `${homedir()}/.codex/sessions`,
+  opencodePath: process.env.OPENCODE_DATABASE ?? `${homedir()}/.local/share/opencode/opencode.db`,
+  opencodeStorageRoot: process.env.OPENCODE_STORAGE ?? `${homedir()}/.local/share/opencode/storage`,
+};
+export const BETTERLEAKS_BIN = process.env.BETTERLEAKS_BIN ?? "betterleaks";
+
 const [they = "they", them = "them", their = "their"] = (process.env.OWNER_PRONOUNS ?? "they/them/their").split("/").map(word => word.trim());
 
 /** The person the brain is about: `name` in prompts and descriptions ("Alex"), `fullName` where a stranger reads it. */
